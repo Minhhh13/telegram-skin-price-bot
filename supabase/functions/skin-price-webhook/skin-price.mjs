@@ -1,3 +1,5 @@
+import { itemNames } from './catalog.mjs';
+
 const API = 'https://api.openskin.dev/v1';
 const DEFAULT_RATES = [3.6, 3.65, 3.7, 3.75, 3.78, 3.8];
 const MAX_ITEMS = 10;
@@ -45,7 +47,8 @@ export function parseRequest(input, botUsername = '') {
 
 const alias = new Map([
   ['ak', 'ak47'], ['ak47', 'ak47'], ['m4', 'm4a4'], ['m4a1s', 'm4a1s'], ['m4a4', 'm4a4'],
-  ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['ouvenir', 'souvenir'],
+  ['deagle', 'deserteagle'], ['glock', 'glock18'], ['usp', 'usps'],
+  ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['ouvenir', 'souvenir'], ['dlore', 'dragonlore'],
   ['fn', 'factorynew'], ['mw', 'minimalwear'], ['ft', 'fieldtested'],
   ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'],
 ]);
@@ -60,10 +63,76 @@ function normalizedTokens(value) {
   return cleaned.split(/[^a-z0-9]+/).filter(Boolean).map((v) => alias.get(v) || v);
 }
 
-function searchTerm(query) {
-  const generic = new Set(['ak47', 'awp', 'm4a1s', 'm4a4', 'karambit', 'butterfly', 'bayonet', 'fn', 'mw', 'ft', 'ww', 'bs', 'fieldtested', 'factorynew', 'minimalwear', 'wellworn', 'battlescarred', 'stattrak', 'souvenir', 'knife', 'skin', 'price']);
-  const finish = query.split('|')[1]?.split('(')[0]?.replace(/\b(?:Factory New|Minimal Wear|Field[ -]Tested|Well[ -]Worn|Battle[ -]Scarred|FN|MW|FT|WW|BS)\b/ig, '').trim();
-  return finish || normalizedTokens(query).filter((v) => !generic.has(v)).sort((a, b) => b.length - a.length)[0] || query.trim();
+const wears = new Set(['factorynew', 'minimalwear', 'fieldtested', 'wellworn', 'battlescarred']);
+const ignored = new Set(['price', 'skin', 'skins', 'item', 'items', 'buff', 'buff163', 'for', 'a', 'an', 'on', 'in', 'base', 'current', 'find', 'check', 'show', 'me', 'please', 'what', 'is', 'of', 'now']);
+const special = new Set(['souvenir', 'stattrak', ...wears]);
+const weaponNames = [...new Set(itemNames.filter((name) => name.includes('|')).map((name) => normalizedTokens(name.split('|')[0]).filter((token) => !special.has(token)).join('')))].filter(Boolean).sort((a, b) => b.length - a.length);
+const weapons = new Set(weaponNames);
+function entryFor(name) {
+  const [left, right = ''] = name.split('|');
+  const tokens = normalizedTokens(name);
+  return { name, tokens, weapon: right ? normalizedTokens(left).filter((token) => !special.has(token)).join('') : '',
+    finish: normalizedTokens((right || name).replace(/\([^)]*\)/g, '')).filter((token) => !special.has(token)).join(''),
+    wear: tokens.find((token) => wears.has(token)) || '', souvenir: tokens.includes('souvenir'), stattrak: tokens.includes('stattrak') };
+}
+const catalog = itemNames.map(entryFor);
+
+function distance(a, b, max = 3) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) current[j] = Math.min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    if (Math.min(...current) > max) return max + 1;
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+function resolveFromCatalog(query, entries) {
+  const tokens = [...new Set(normalizedTokens(query))];
+  const baseTokens = tokens.filter((token) => !special.has(token) && !ignored.has(token));
+  const compact = baseTokens.join('');
+  const weapon = weaponNames.find((name) => compact.startsWith(name)) || '';
+  const wear = tokens.find((token) => wears.has(token)) || '';
+  const souvenir = tokens.includes('souvenir');
+  const stattrak = tokens.includes('stattrak');
+  const finishKey = weapon ? compact.slice(weapon.length) : compact;
+  if (!finishKey || finishKey.length < 3) return { missing: true };
+  const maxError = finishKey.length >= 8 ? 2 : finishKey.length >= 5 ? 1 : 0;
+  const ranked = [];
+  for (const entry of entries) {
+    if (weapon && entry.weapon !== weapon) continue;
+    if (wear && entry.wear !== wear) continue;
+    if (entry.souvenir !== souvenir || entry.stattrak !== stattrak) continue;
+    if (tokens.includes('doppler') && !tokens.includes('gamma') && entry.finish.includes('gamma')) continue;
+    if (!entry.finish) continue;
+    const error = entry.finish === finishKey ? 0 : distance(finishKey, entry.finish, maxError);
+    if (error <= maxError) ranked.push({ entry, error });
+  }
+  if (!ranked.length) return { missing: true };
+  const best = Math.min(...ranked.map((r) => r.error));
+  const matches = ranked.filter((r) => r.error === best).map((r) => r.entry);
+  if (matches.length === 1) return { name: matches[0].name };
+  const baseNames = new Set(matches.map((r) => r.name.replace(/ \((?:Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/, '')));
+  if (!wear && baseNames.size === 1 && matches.every((r) => r.wear)) {
+    const order = ['factorynew', 'minimalwear', 'fieldtested', 'wellworn', 'battlescarred'];
+    return { names: matches.sort((a, b) => order.indexOf(a.wear) - order.indexOf(b.wear)).map((r) => r.name) };
+  }
+  return { ambiguous: matches.slice(0, 5).map((r) => r.name), more: matches.length > 5 };
+}
+
+export function aiItemSupportedByText(source, item) {
+  const finish = normalizedTokens(item.split('|')[1]?.replace(/\([^)]*\)/g, '') || '').join('');
+  const sourceKey = normalizedTokens(source).join('');
+  if (!finish || !sourceKey) return false;
+  if (sourceKey.includes(finish)) return true;
+  for (let start = 0; start < sourceKey.length; start++) {
+    for (let length = Math.max(3, finish.length - 2); length <= Math.min(finish.length + 2, sourceKey.length - start); length++) {
+      if (distance(sourceKey.slice(start, start + length), finish, 2) <= 2) return true;
+    }
+  }
+  return false;
 }
 
 async function getJson(url, options = {}, fetchFn = fetch) {
@@ -72,33 +141,9 @@ async function getJson(url, options = {}, fetchFn = fetch) {
   return response.json();
 }
 
-export async function resolveItem(query, fetchFn = fetch) {
-  const term = searchTerm(query);
-  const url = `${API}/items?search=${encodeURIComponent(term)}&limit=100`;
-  const catalog = await getJson(url, {}, fetchFn);
-  const tokens = [...new Set(normalizedTokens(query))];
-  let matches = (catalog.data || []).filter((entry) => {
-    const candidate = new Set(normalizedTokens(entry.name));
-    return tokens.every((token) => candidate.has(token));
-  });
-  if (tokens.includes('doppler') && !tokens.includes('gamma')) {
-    matches = matches.filter((entry) => !normalizedTokens(entry.name).includes('gamma'));
-  }
-  const exact = matches.find((entry) => entry.name.toLowerCase() === query.toLowerCase());
-  if (exact) return { name: exact.name };
-  const explicitlySpecial = tokens.includes('stattrak') || tokens.includes('souvenir');
-  if (!explicitlySpecial) matches = matches.filter((entry) => !entry.is_stattrak && !entry.is_souvenir && !/^(?:Souvenir|StatTrak)/i.test(entry.name));
-  if (matches.length === 1) return { name: matches[0].name };
-  const wearTokens = new Set(['factorynew', 'minimalwear', 'fieldtested', 'wellworn', 'battlescarred']);
-  if (matches.length > 1 && !tokens.some((token) => wearTokens.has(token))) {
-    const baseNames = new Set(matches.map((entry) => entry.name.replace(/ \((?:Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/, '')));
-    if (baseNames.size === 1 && matches.every((entry) => / \((?:Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/.test(entry.name))) {
-      const order = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
-      return { names: matches.map((entry) => entry.name).sort((a, b) => order.findIndex((wear) => a.endsWith(`(${wear})`)) - order.findIndex((wear) => b.endsWith(`(${wear})`))) };
-    }
-  }
-  if (matches.length > 1) return { ambiguous: matches.slice(0, 5).map((entry) => entry.name), more: matches.length > 5 };
-  return { missing: true };
+export async function resolveItem(query, _fetchFn = fetch, names = null) {
+  const entries = names ? names.map((name) => entryFor(typeof name === 'string' ? name : name.name)) : catalog;
+  return resolveFromCatalog(query, entries);
 }
 
 function formatRate(rate) {
@@ -144,20 +189,20 @@ function formatQuote(name, result, rates, now) {
   return lines.join('\n') + '\n';
 }
 
-export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()) {
+export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now(), names = null) {
   if (!Array.isArray(parsed?.items) || !parsed.items.length || parsed.items.length > MAX_ITEMS ||
       !Array.isArray(parsed?.rates) || !parsed.rates.length || parsed.rates.some((r) => !Number.isFinite(r) || r < 2 || r > 6)) {
     return [helpText];
   }
   const resolved = await Promise.all(parsed.items.map(async (item) => {
     const variant = extractPattern(item);
-    return { query: item, variant, match: await resolveItem(variant.lookup, fetchFn) };
+    return { query: item, variant, match: await resolveItem(variant.lookup, fetchFn, names) };
   }));
-  const names = [...new Set(resolved.flatMap((r) => r.match.names || (r.match.name ? [r.match.name] : [])))];
+  const priceNames = [...new Set(resolved.flatMap((r) => r.match.names || (r.match.name ? [r.match.name] : [])))];
   let data = {};
-  if (names.length) {
+  if (priceNames.length) {
     const batch = await getJson(`${API}/prices/batch`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: names }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items: priceNames }),
     }, fetchFn);
     data = batch.data || {};
   }
@@ -197,12 +242,12 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
   return messages;
 }
 
-export async function buildReply(input, botUsername = '', fetchFn = fetch, now = Date.now()) {
+export async function buildReply(input, botUsername = '', fetchFn = fetch, now = Date.now(), names = null) {
   if (requestsFloatFilter(input)) return [floatFilterUnavailable];
   let parsed;
   try { parsed = parseRequest(input, botUsername); }
   catch (error) { return [escapeHtml(error.message) + '\n\n' + helpText]; }
-  return buildParsedReply(parsed, fetchFn, now);
+  return buildParsedReply(parsed, fetchFn, now, names);
 }
 
 export function shouldReply(message, botUsername = '') {

@@ -1,6 +1,8 @@
 # BUFF163 skin price bot for Telegram and Discord
 
-Standalone on-demand lookup for up to 10 CS2 items per request. It uses the [OpenSkin free Pricing API](https://openskin.dev/) to search exact item names and obtain BUFF163's original CNY lowest ask. No OpenSkin account, paid model or scrape session is required. A CNY→VND rate of `3.65` means **3,650 VND per CNY**. The bot uses no Trade Desk data or code.
+Standalone on-demand lookup for up to 10 CS2 items per request. It resolves names against a local snapshot of the [OpenSkin free item catalog](https://openskin.dev/) and requests current BUFF163 CNY lowest asks from OpenSkin only for the resolved names. This keeps routine name matching fast and prevents AI from substituting an unrelated item. No OpenSkin account, paid model or scrape session is required. A CNY→VND rate of `3.65` means **3,650 VND per CNY**. The bot uses no Trade Desk data or code.
+
+Refresh the catalog after new CS2 items are released with `npm run sync:catalog`, then redeploy. The snapshot currently contains 38,043 item names. Text requests use the local catalog first; Gemini handles photos and unclear text, and its text suggestions must agree with the requested skin name before any price is quoted.
 
 ## Group use
 
@@ -25,7 +27,7 @@ The always-on Render Starter instance points Discord's Interactions Endpoint dir
 
 ## Messenger
 
-The existing Render Node service can also run a Messenger listener using the clone account. It only replies inside the configured TradeDesk group. Send `!buff awp long dog ft` or genuinely mention the clone account and add the skin names. For a screenshot, attach a JPEG or PNG with `!buff` in the caption (or mention the clone account). Photo recognition needs the existing `GEMINI_API_KEY`. The reply appears in the same thread and quotes BUFF163 prices through the same OpenSkin engine used by Discord and Telegram.
+The existing Render Node service also runs a Messenger listener using the clone account, scoped to the configured TradeDesk group. Send `!buff awp long dog ft`. The clone signs in, but live group message delivery has not yet passed an end-to-end test, so Messenger replies are not currently reliable. Photo and actual mention handling also remain unverified. Discord and Telegram use the same OpenSkin lookup engine independently of this listener.
 
 Set these two Render environment variables on the **same** web service:
 

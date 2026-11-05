@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildReply, escapeHtml, parseRequest, resolveItem, shouldReply } from '../supabase/functions/skin-price-webhook/skin-price.mjs';
+import { aiItemSupportedByText, buildReply, escapeHtml, parseRequest, resolveItem, shouldReply } from '../supabase/functions/skin-price-webhook/skin-price.mjs';
 import { createHandler } from '../supabase/functions/skin-price-webhook/handler.mjs';
 
 const catalog = [
@@ -47,11 +47,20 @@ test('parses multiple skins and explicit CNY→VND rates', () => {
 test('resolves abbreviated base item without mixing Souvenir or StatTrak', async () => {
   assert.deepEqual(await resolveItem('AK redline ft', mockFetch), { name: 'AK-47 | Redline (Field-Tested)' });
   assert.deepEqual(await resolveItem('AK redline', mockFetch), {
-    names: ['AK-47 | Redline (Minimal Wear)', 'AK-47 | Redline (Field-Tested)'],
+    names: ['AK-47 | Redline (Minimal Wear)', 'AK-47 | Redline (Field-Tested)', 'AK-47 | Redline (Well-Worn)', 'AK-47 | Redline (Battle-Scarred)'],
   });
   assert.deepEqual(await resolveItem('redline ft', mockFetch), {
     ambiguous: ['AK-47 | Redline (Field-Tested)', 'AWP | Redline (Field-Tested)'], more: false,
   });
+});
+
+test('local catalog resolves B the Monster without a catalog request or unrelated AI guess', async () => {
+  const noNetwork = () => { throw new Error('Catalog lookup should be local'); };
+  assert.deepEqual(await resolveItem('Ak bthemonster ft', noNetwork), { name: 'AK-47 | B the Monster (Field-Tested)' });
+  assert.deepEqual(await resolveItem('Ak b the monster ft', noNetwork), { name: 'AK-47 | B the Monster (Field-Tested)' });
+  assert.deepEqual(await resolveItem('ak nonsense ft', noNetwork), { missing: true });
+  assert.equal(aiItemSupportedByText('Ak bthemonster ft', 'AK-47 | Inheritance (Field-Tested)'), false);
+  assert.equal(aiItemSupportedByText('Ak bthemonster ft', 'AK-47 | B the Monster (Field-Tested)'), true);
 });
 
 test('unspecified wear quotes every available base wear', async () => {

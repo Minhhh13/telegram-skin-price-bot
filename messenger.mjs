@@ -16,10 +16,11 @@ export function parseMessengerRequest(event, accountId, threadId) {
   const raw = String(event.text || '').trim();
   const command = raw.match(/^!buff\b\s*[:,-]?\s*/i);
   if (command) return { text: raw.slice(command[0].length).trim(), hasImage: Boolean(event.attachments?.length) };
-  const mentioned = event.mentions?.some((mention) => String(mention.id) === String(accountId));
-  if (!mentioned) return null;
-  const text = raw.replace(/@?BUFF\s*BOT\s*PRICE\s*CHECKER\b/i, '')
-    .replace(/@?Thang\s*Manh\b/i, '').trim();
+  const mentioned = event.mentions?.some((mention) => String(mention.id ?? mention.userId) === String(accountId));
+  const tag = raw.match(/^@Thang\s*Manh\s*Nguyen\b[\s,:-]*/i);
+  if (!mentioned && !tag) return null;
+  const text = raw.replace(/^@?BUFF\s*BOT\s*PRICE\s*CHECKER\b[\s,:-]*/i, '')
+    .replace(/^@?Thang\s*Manh\s*Nguyen\b[\s,:-]*/i, '').trim();
   return { text, hasImage: Boolean(event.attachments?.length) };
 }
 

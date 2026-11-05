@@ -1,5 +1,5 @@
 import { createPublicKey, verify } from 'node:crypto';
-import { buildParsedReply, buildReply, floatFilterUnavailable, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
+import { aiItemSupportedByText, buildParsedReply, buildReply, floatFilterUnavailable, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
 import { imageFromBytes, interpretItems, requestedRates } from './supabase/functions/skin-price-webhook/gemini.mjs';
 
 const discordApi = 'https://discord.com/api/v10';
@@ -51,6 +51,7 @@ export async function lookupDiscord(item, image, geminiKey = '', fetchFn = fetch
     try { aiItems = await interpretItems({ text: item, image, apiKey: geminiKey, fetchFn }); }
     catch (error) { console.warn('Discord AI item recognition unavailable:', error instanceof Error ? error.message : String(error)); }
   }
+  if (aiItems && !image) aiItems = aiItems.filter((candidate) => aiItemSupportedByText(item, candidate));
   const html = aiItems?.length
     ? await buildParsedReply({ items: aiItems, rates: requestedRates(item, parseRequest) }, fetchFn)
     : image && !item.trim() ? ['Photo recognition is temporarily unavailable. Please type the skin names.']

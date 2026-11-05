@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "sync:catalog": "node scripts/sync-catalog.mjs"
   },
   "engines": {
     "node": ">=22 <23"
