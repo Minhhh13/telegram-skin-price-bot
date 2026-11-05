@@ -14,6 +14,12 @@ test('only !buff and actual account mentions in the intended group trigger a loo
     { text: 'awp redline', hasImage: false });
   assert.deepEqual(parseMessengerRequest({ ...base, text: '@Thang Manh Nguyen ak slate' }, accountId, threadId),
     { text: 'ak slate', hasImage: false });
+  assert.deepEqual(parseMessengerRequest({ ...base, text: '@Thang Manh Nguyen stt printstream ft' }, accountId, threadId),
+    { text: 'stt printstream ft', hasImage: false });
+  assert.deepEqual(parseMessengerRequest({ ...base, text: '@Thang Manh Nguyen redline awp ft' }, accountId, threadId),
+    { text: 'redline awp ft', hasImage: false });
+  assert.deepEqual(parseMessengerRequest({ ...base, text: 'please price redline awp ft @Thang Manh Nguyen' }, accountId, threadId),
+    { text: 'please price redline awp ft', hasImage: false });
   assert.equal(parseMessengerRequest({ ...base, text: '@Thang Manh Nguyen mẹ gia minh' }, accountId, threadId), null);
   assert.equal(parseMessengerRequest({ ...base, threadId: 'competitor-group', text: '@Thang Manh Nguyen ak slate' }, accountId, threadId), null);
   assert.equal(parseMessengerRequest({ ...base, text: 'awp long dog ft' }, accountId, threadId), null);
@@ -34,9 +40,14 @@ test('messages outside the intended group cause no send', async () => {
   assert.equal(sent.length, 0);
 });
 
-test('Messenger formatting uses plain text and a direct source link', () => {
-  assert.equal(messengerText('**AWP** · [BUFF listing](https://buff.163.com/goods/123)\n`3.75 → ₫10,000`'),
-    'AWP · BUFF listing: https://buff.163.com/goods/123\n3.75 → ₫10,000');
+test('Messenger formatting is readable on a phone without a link preview', () => {
+  const reply = messengerText('**BUFF163 base prices · CNY → VND**\n\n**AWP | Redline (Field-Tested)**\n**¥200.48 CNY** · BUFF163 feed ask · [BUFF listing](https://buff.163.com/goods/123)\n`3.75 → ₫751,800   |   3.78 → ₫757,814`\nFeed snapshot 2026-11-05 16:25 UTC (57 min old) ⚠️ May miss newer listings');
+  assert.match(reply, /^🎯 BUFF163 PRICE CHECK\n\n◆ AWP \| Redline \(Field-Tested\)/);
+  assert.match(reply, /💴 ¥200\.48 CNY · BUFF feed ask\n   Item #123/);
+  assert.match(reply, /3\.75 → ₫751,800\n   3\.78 → ₫757,814/);
+  assert.match(reply, /🕒 Feed 57 min old · 16:25 UTC/);
+  assert.match(reply, /⚠️ May miss newer listings/);
+  assert.doesNotMatch(reply, /https?:\/\/|CNY → VND/);
 });
 
 test('inbox refresh answers one new group request and ignores old or duplicate messages', async () => {

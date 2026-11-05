@@ -1,6 +1,7 @@
 import { Client, Utils } from 'meta-messenger.js';
 import { lookupDiscord } from './discord.mjs';
 import { imageFromBytes } from './supabase/functions/skin-price-webhook/gemini.mjs';
+import { isLikelySkinRequest } from './supabase/functions/skin-price-webhook/skin-price.mjs';
 
 const MAX_IMAGE_BYTES = 5_000_000;
 const RETRY_MS = 15_000;
@@ -13,17 +14,27 @@ export function parseMessengerRequest(event, accountId, threadId) {
   const command = raw.match(/^!buff\b\s*[:,-]?\s*/i);
   if (command) return { text: raw.slice(command[0].length).trim(), hasImage: Boolean(event.attachments?.length) };
   const mentioned = event.mentions?.some((mention) => String(mention.id ?? mention.userId) === String(accountId));
-  const tag = raw.match(/^@Thang\s*Manh\s*Nguyen\b[\s,:-]*/i);
+  const tag = raw.match(/@Thang\s*Manh\s*Nguyen\b/i);
   if (!mentioned && !tag) return null;
-  const text = raw.replace(/^@?BUFF\s*BOT\s*PRICE\s*CHECKER\b[\s,:-]*/i, '')
-    .replace(/^@?Thang\s*Manh\s*Nguyen\b[\s,:-]*/i, '').trim();
-  if (!event.attachments?.length && !/\b(?:buff|price|skin|item|ak(?:-?47)?|awp|m4a?[14]?(?:-?s)?|m9|talon|butter(?:fly)?|btf|kara(?:mbit)?|bayonet|glock|usp|deagle|desert|glove|wraps|doppler|redline|dragon\s*lore|dlore|howl|slaughter|ruby|sapphire|emerald)\b/i.test(text)) return null;
+  const text = raw.replace(/@BUFF\s*BOT\s*PRICE\s*CHECKER\b/ig, '')
+    .replace(/@Thang\s*Manh\s*Nguyen\b/ig, '').replace(/^[\s,:-]+|[\s,:-]+$/g, '').trim();
+  if (!event.attachments?.length && !isLikelySkinRequest(text)) return null;
   return { text, hasImage: Boolean(event.attachments?.length) };
 }
 
 export function messengerText(markdown) {
-  return String(markdown).replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '$1: $2')
-    .replace(/\*\*/g, '').replace(/`/g, '').replaceAll('@\u200b', '@');
+  return String(markdown).split('\n').map((line) => {
+    if (/^\*\*BUFF163 base prices · CNY → VND\*\*$/.test(line)) return '🎯 BUFF163 PRICE CHECK';
+    const heading = line.match(/^\*\*(.+)\*\*$/);
+    if (heading) return `◆ ${heading[1]}`;
+    const quote = line.match(/^\*\*(¥[\d,.]+ CNY)\*\* · BUFF163 (.+?) · \[BUFF (?:listing|item \(select [^)]+\))\]\(https:\/\/buff\.163\.com\/goods\/(\d+)\)$/);
+    if (quote) return `💴 ${quote[1]} · BUFF ${quote[2]}\n   Item #${quote[3]}`;
+    if (/^`[\d.]+ → ₫/.test(line)) return line.replace(/^`|`$/g, '').split(/\s+\|\s+/).map((rate) => `   ${rate.trim()}`).join('\n');
+    const snapshot = line.match(/^Feed snapshot (\S+) (\S+) UTC \(([^)]+)\)(?: ⚠️ .*)?$/);
+    if (snapshot) return `🕒 Feed ${snapshot[3]} · ${snapshot[2]} UTC${line.includes('⚠️') ? '\n⚠️ May miss newer listings' : ''}`;
+    return line.replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, '$1')
+      .replace(/\*\*/g, '').replace(/`/g, '').replaceAll('@\u200b', '@');
+  }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 async function firstImage(event, fetchFn) {
@@ -57,7 +68,7 @@ export async function answerMessengerMessage(client, event, config, fetchFn = fe
       await client.sendMessage(config.threadId, 'Photo recognition is unavailable right now. Please type the skin names after !buff.', options);
       return true;
     }
-    const chunks = await lookupDiscord(request.text, image, config.geminiKey, fetchFn);
+    const chunks = await lookupDiscord(request.text, image, config.geminiKey, fetchFn, event.text);
     for (const content of chunks) await client.sendMessage(config.threadId, messengerText(content), options);
   } catch (error) {
     console.error('Messenger lookup failed:', error instanceof Error ? error.message : String(error));

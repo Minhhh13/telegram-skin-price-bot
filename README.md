@@ -2,7 +2,7 @@
 
 Standalone on-demand lookup for up to 10 CS2 items per request. It resolves names against a local snapshot of the [OpenSkin free item catalog](https://openskin.dev/) and requests BUFF163 CNY feed prices from OpenSkin only for the resolved names. This keeps routine name matching fast and prevents AI from substituting an unrelated item. OpenSkin snapshots can lag BUFF's live listings, so replies show the source timestamp and warn after five minutes. No OpenSkin account, paid model or scrape session is required. A CNY→VND rate of `3.65` means **3,650 VND per CNY**. The bot uses no Trade Desk data or code.
 
-Refresh the catalog after new CS2 items are released with `npm run sync:catalog`, then redeploy. The snapshot currently contains 38,043 item names. Text requests use the local catalog first; Gemini handles photos and unclear text, and its text suggestions must agree with the requested skin name before any price is quoted.
+Refresh the catalog after new CS2 items are released with `npm run sync:catalog`, then redeploy. The snapshot currently contains 38,043 item names. Text requests use the local catalog for fast name matching, including common shorthand and reversed weapon/finish order. When configured, Gemini receives only messages addressed to the bot and uses the full original request plus nearby catalog names to interpret unclear text and photos. It never supplies prices. Ambiguous names stay ambiguous until the weapon is specified.
 
 ## Group use
 
@@ -27,16 +27,16 @@ The always-on Render Starter instance points Discord's Interactions Endpoint dir
 
 ## Messenger
 
-The existing Render Node service also runs a Messenger listener using the clone account, scoped to the configured TradeDesk group. Send `!buff awp long dog ft` or tag `@Thang Manh Nguyen` followed by skin names. The newer LightSpeed client must still pass an end-to-end live group test before Messenger replies can be called reliable. Discord and Telegram use the same OpenSkin lookup engine independently of this listener.
+The existing Render Starter Node service also runs a Messenger listener using the clone account, scoped to the configured TradeDesk group. Send `!buff awp long dog ft` or tag `@Thang Manh Nguyen` followed by skin names. It refreshes the target group's inbox about every 30 seconds because the unofficial live event stream has been unreliable. Replies use a compact plain-text layout and avoid URLs that create large Messenger previews. End-to-end replies were verified in the intended group, but this unofficial integration can still break when Meta changes its protocol or the clone session expires.
 
 Set these two Render environment variables on the **same** web service:
 
 ```text
 MESSENGER_THREAD_ID=<exact approved group thread ID>
-MESSENGER_COOKIES=<clone account's Cookie request-header value from messenger.com>
+MESSENGER_COOKIES=<clone account's approved Facebook.com session cookies>
 ```
 
-Keep the complete cookie string only in Render's secret environment setting. Do not send it in chat, commit it, or use the primary Facebook account. When both variables are present, the service logs a connection result at startup and retries a disconnected session. A browser login does not transfer to Render by itself. The Messenger client uses an unofficial protocol and may stop working when Meta changes it or the session expires; a fresh clone session may then be needed. The implementation uses [meta-messenger.js](https://github.com/yumi-team/meta-messenger.js).
+Keep the complete cookie string only in Render's secret environment setting. Do not send it in chat, commit it, or use the primary Facebook account. When both variables are present, the service logs a connection result at startup and retries a disconnected session. A browser login does not transfer to Render by itself. A fresh clone session may be needed if the current session expires. The implementation uses [meta-messenger.js](https://github.com/yumi-team/meta-messenger.js).
 
 Required Render environment variables for Discord:
 

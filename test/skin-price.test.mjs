@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aiItemSupportedByText, buildReply, escapeHtml, parseRequest, resolveItem, shouldReply } from '../supabase/functions/skin-price-webhook/skin-price.mjs';
+import { aiItemSupportedByText, buildReply, catalogHintsForText, escapeHtml, isLikelySkinRequest, parseRequest, resolveItem, shouldReply } from '../supabase/functions/skin-price-webhook/skin-price.mjs';
 import { createHandler } from '../supabase/functions/skin-price-webhook/handler.mjs';
+import { lookupDiscord } from '../discord.mjs';
 
 const catalog = [
   { name: 'AK-47 | Redline (Field-Tested)', is_stattrak: false, is_souvenir: false },
@@ -81,6 +82,47 @@ test('M9 weapon type stays fixed when the Slaughter finish is abbreviated', asyn
   }
   const otherKnife = await resolveItem('Bayonet slaughter fn');
   assert.deepEqual(otherKnife, { name: '★ Bayonet | Slaughter (Factory New)' });
+});
+
+test('catalog matches shorthand, reversed words, and StatTrak without guessing the weapon', async () => {
+  assert.deepEqual(await resolveItem('redline awp ft'), { name: 'AWP | Redline (Field-Tested)' });
+  assert.deepEqual(await resolveItem('chrome cannon ft'), { name: 'AWP | Chrome Cannon (Field-Tested)' });
+  assert.deepEqual(await resolveItem('stt printstream usp mw'), { name: 'StatTrak™ USP-S | Printstream (Minimal Wear)' });
+  const ambiguous = await resolveItem('stt printstream ft');
+  assert.ok(ambiguous.ambiguous?.some((name) => name.includes('USP-S | Printstream')));
+  assert.equal(isLikelySkinRequest('mẹ gia minh'), false);
+  assert.equal(isLikelySkinRequest('stt printstream ft'), true);
+  assert.equal(isLikelySkinRequest('redline awp ft'), true);
+  assert.ok(catalogHintsForText('stt printstream usp mw').some((name) => name.includes('StatTrak™ USP-S | Printstream')));
+});
+
+test('fast direct lookup also sends the full original request and catalog hints to Gemini', async () => {
+  let prompt = '';
+  const fetchFn = async (url, options) => {
+    if (url.includes('generativelanguage.googleapis.com')) {
+      prompt = JSON.parse(options.body).contents[0].parts[0].text;
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"items":[]}' }] } }] }) };
+    }
+    return mockFetch(url, options);
+  };
+  const reply = (await lookupDiscord('redline awp ft', null, 'test-key', fetchFn,
+    '@Thang Manh Nguyen please find redline awp ft for me')).join('\n');
+  assert.match(reply, /AWP \| Redline \(Field-Tested\)/);
+  assert.match(prompt, /Full user message: @Thang Manh Nguyen please find redline awp ft for me/);
+  assert.match(prompt, /AWP \| Redline/);
+});
+
+test('an ambiguous finish does not become an AI-guessed weapon price', async () => {
+  const fetchFn = async (url) => {
+    if (url.includes('generativelanguage.googleapis.com')) return {
+      ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"items":["AWP | Printstream (Field-Tested)"]}' }] } }] }),
+    };
+    throw new Error(`Unexpected price lookup: ${url}`);
+  };
+  const reply = (await lookupDiscord('stt printstream ft', null, 'test-key', fetchFn)).join('\n');
+  assert.match(reply, /could mean:/);
+  assert.match(reply, /StatTrak™ USP-S \| Printstream/);
+  assert.doesNotMatch(reply, /¥\d/);
 });
 
 test('unspecified wear quotes every available base wear', async () => {
@@ -293,6 +335,30 @@ test('webhook authenticates the Telegram header and replies in the same chat', a
   assert.equal(sent[0].chat_id, -100123);
   assert.equal(sent[0].reply_to_message_id, 42);
   assert.match(sent[0].text, /¥160\.99/);
+});
+
+test('Telegram keeps a fast catalog answer while sending the full command to Gemini', async () => {
+  let prompt = '';
+  const sent = [];
+  const fakeFetch = async (url, options) => {
+    if (url.includes('generativelanguage.googleapis.com')) {
+      prompt = JSON.parse(options.body).contents[0].parts[0].text;
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"items":[]}' }] } }] }) };
+    }
+    if (url.includes('api.telegram.org')) {
+      sent.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ ok: true }) };
+    }
+    return mockFetch(url, options);
+  };
+  const handler = createHandler({ token: 'test-token', secret: 'test-secret', botUsername: 'SkinBot', geminiKey: 'test-key' }, fakeFetch);
+  const response = await handler(new Request('https://example.test/telegram', {
+    method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'test-secret' },
+    body: JSON.stringify({ message: { chat: { id: -100123 }, message_id: 7, text: '/price@SkinBot redline awp ft' } }),
+  }));
+  assert.equal(response.status, 200);
+  assert.match(sent[0].text, /AWP \| Redline \(Field-Tested\)/);
+  assert.match(prompt, /Full user message: \/price@SkinBot redline awp ft/);
 });
 
 

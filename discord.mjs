@@ -1,5 +1,5 @@
 import { createPublicKey, verify } from 'node:crypto';
-import { aiItemSupportedByText, buildParsedReply, buildReply, floatFilterUnavailable, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
+import { aiItemSupportedByText, buildParsedReply, buildReply, catalogHintsForText, floatFilterUnavailable, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
 import { imageFromBytes, interpretItems, requestedRates } from './supabase/functions/skin-price-webhook/gemini.mjs';
 
 const discordApi = 'https://discord.com/api/v10';
@@ -38,19 +38,18 @@ export function splitDiscord(text, max = 1900) {
   return chunks;
 }
 
-export async function lookupDiscord(item, image, geminiKey = '', fetchFn = fetch) {
+export async function lookupDiscord(item, image, geminiKey = '', fetchFn = fetch, rawText = item) {
   if (requestsFloatFilter(item)) return [discordText(floatFilterUnavailable)];
+  const aiTask = geminiKey ? interpretItems({ text: rawText, image, candidates: catalogHintsForText(item), apiKey: geminiKey, fetchFn })
+    .catch((error) => { console.warn('AI item recognition unavailable:', error instanceof Error ? error.message : String(error)); return null; }) : null;
   let direct = null;
   if (item.trim() && !image) {
     direct = await buildReply(item, '', fetchFn);
+    if (direct.some((part) => /could mean:/i.test(part))) return splitDiscord(direct.map(discordText).join('\n\n'));
     const unresolved = direct.some((part) => /no matching item found|could mean:|Send \/price followed by/i.test(part));
     if (!unresolved) return splitDiscord(direct.map(discordText).join('\n\n'));
   }
-  let aiItems = null;
-  if (geminiKey) {
-    try { aiItems = await interpretItems({ text: item, image, apiKey: geminiKey, fetchFn }); }
-    catch (error) { console.warn('Discord AI item recognition unavailable:', error instanceof Error ? error.message : String(error)); }
-  }
+  let aiItems = aiTask ? await aiTask : null;
   if (aiItems && !image) aiItems = aiItems.filter((candidate) => aiItemSupportedByText(item, candidate));
   const html = aiItems?.length
     ? await buildParsedReply({ items: aiItems, rates: requestedRates(item, parseRequest) }, fetchFn)

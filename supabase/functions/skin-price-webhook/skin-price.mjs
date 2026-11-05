@@ -51,7 +51,7 @@ const alias = new Map([
   ['butter', 'butterflyknife'], ['btf', 'butterflyknife'], ['talon', 'talonknife'],
   ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['ouvenir', 'souvenir'], ['dlore', 'dragonlore'],
   ['fn', 'factorynew'], ['mw', 'minimalwear'], ['min', 'minimalwear'], ['ft', 'fieldtested'],
-  ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'],
+  ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'], ['stt', 'stattrak'],
 ]);
 
 function normalizedTokens(value) {
@@ -59,6 +59,8 @@ function normalizedTokens(value) {
   cleaned = cleaned.replace(/field[\s-]*tested/g, ' fieldtested ').replace(/factory[\s-]*new/g, ' factorynew ')
     .replace(/\bm9\s*bayonet\b/g, ' m9 ')
     .replace(/\btalon\s+knife\b/g, ' talonknife ')
+    .replace(/\bbutterfly\s+knife\b/g, ' butterflyknife ')
+    .replace(/\busp[\s-]*s\b/g, ' usps ')
     .replace(/dragon[\s-]*lore/g, ' dragon lore ').replace(/long[\s-]*dog/g, ' longdog ')
     .replace(/minimal[\s-]*wear/g, ' minimalwear ').replace(/well[\s-]*worn/g, ' wellworn ')
     .replace(/battle[\s-]*scarred/g, ' battlescarred ').replace(/m4a1[\s-]*s/g, ' m4a1s ')
@@ -67,7 +69,7 @@ function normalizedTokens(value) {
 }
 
 const wears = new Set(['factorynew', 'minimalwear', 'fieldtested', 'wellworn', 'battlescarred']);
-const ignored = new Set(['price', 'skin', 'skins', 'item', 'items', 'buff', 'buff163', 'for', 'a', 'an', 'on', 'in', 'base', 'current', 'find', 'check', 'show', 'me', 'please', 'what', 'is', 'of', 'now']);
+const ignored = new Set(['price', 'skin', 'skins', 'item', 'items', 'buff', 'buff163', 'for', 'a', 'an', 'on', 'in', 'base', 'current', 'find', 'check', 'show', 'me', 'please', 'what', 'is', 'of', 'now', 'how', 'much', 'does', 'cost', 'can', 'you', 'tell', 'the', 'right']);
 const special = new Set(['souvenir', 'stattrak', ...wears]);
 const weaponNames = [...new Set(itemNames.filter((name) => name.includes('|')).map((name) => normalizedTokens(name.split('|')[0]).filter((token) => !special.has(token)).join('')))].filter(Boolean).sort((a, b) => b.length - a.length);
 const weapons = new Set(weaponNames);
@@ -80,6 +82,41 @@ function entryFor(name) {
     wear: tokens.find((token) => wears.has(token)) || '', souvenir: tokens.includes('souvenir'), stattrak: tokens.includes('stattrak') };
 }
 const catalog = itemNames.map(entryFor);
+const catalogCueTokens = new Set(catalog.flatMap((entry) => entry.tokens.filter((token) =>
+  token.length >= 4 && !ignored.has(token) && !special.has(token))));
+
+export function isLikelySkinRequest(text) {
+  const tokens = normalizedTokens(String(text || ''));
+  if (tokens.some((token) => ['buff', 'buff163', 'price', 'skin', 'skins'].includes(token))) return true;
+  if (tokens.some((token) => catalogCueTokens.has(token))) return true;
+  return tokens.some((token) => wears.has(token)) && tokens.some((token) => token.length >= 4 && !ignored.has(token) && !special.has(token));
+}
+
+export function catalogHintsForText(text, limit = 16) {
+  const tokens = [...new Set(normalizedTokens(String(text || '')).filter((token) =>
+    !ignored.has(token) && token !== 'the' && token !== 'phase' && !/^[1-4]$/.test(token)))];
+  if (!tokens.length) return [];
+  const ranked = [];
+  for (const entry of catalog) {
+    if (!entry.weapon || !entry.finish) continue;
+    let score = 0;
+    for (const token of tokens) {
+      if (entry.tokens.includes(token)) score += wears.has(token) ? 1 : special.has(token) ? 2 : 3;
+      else if (token.length >= 4 && entry.finish.startsWith(token)) score += 2;
+    }
+    if (entry.stattrak && !tokens.includes('stattrak')) score -= 3;
+    if (entry.souvenir && !tokens.includes('souvenir')) score -= 3;
+    if (score >= 3) ranked.push({ name: entry.name, score });
+  }
+  ranked.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  const seen = new Set();
+  return ranked.filter(({ name }) => {
+    const base = name.replace(/ \((?:Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/, '');
+    if (seen.has(base)) return false;
+    seen.add(base);
+    return true;
+  }).slice(0, limit).map(({ name }) => name);
+}
 
 function distance(a, b, max = 3) {
   if (Math.abs(a.length - b.length) > max) return max + 1;
@@ -101,11 +138,11 @@ function resolveFromCatalog(query, entries) {
   const gloveHint = compact.endsWith('gloves') || compact.startsWith('gloves');
   if (compact.endsWith('gloves') && compact !== 'gloves') compact = compact.slice(0, -6);
   else if (compact.startsWith('gloves') && compact !== 'gloves') compact = compact.slice(6);
-  const weapon = weaponNames.find((name) => compact.startsWith(name)) || '';
+  const weapon = weaponNames.find((name) => compact.startsWith(name) || compact.endsWith(name)) || '';
   const wear = tokens.find((token) => wears.has(token)) || '';
   const souvenir = tokens.includes('souvenir');
   const stattrak = tokens.includes('stattrak');
-  const finishKey = weapon ? compact.slice(weapon.length) : compact;
+  const finishKey = weapon ? compact.startsWith(weapon) ? compact.slice(weapon.length) : compact.slice(0, -weapon.length) : compact;
   if (!finishKey || finishKey.length < 3) return weapon ? { needFinish: weapon } : { missing: true };
   const maxError = finishKey.length >= 8 ? 2 : finishKey.length >= 5 ? 1 : 0;
   const ranked = [];

@@ -30,7 +30,7 @@ export async function answerChannelMessage(message, config, fetchFn = fetch) {
   try {
     await message.channel.sendTyping();
     const image = config.geminiKey ? await firstImage(message, fetchFn) : null;
-    const chunks = await lookupDiscord(text, image, config.geminiKey, fetchFn);
+    const chunks = await lookupDiscord(text, image, config.geminiKey, fetchFn, message.content);
     for (const [index, content] of chunks.entries()) {
       const userId = message.author?.id;
       const options = {

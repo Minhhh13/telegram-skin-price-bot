@@ -1,4 +1,4 @@
-import { aiItemSupportedByText, buildParsedReply, buildReply, floatFilterUnavailable, helpText, parseRequest, requestsFloatFilter, shouldReply } from './skin-price.mjs';
+import { aiItemSupportedByText, buildParsedReply, buildReply, catalogHintsForText, floatFilterUnavailable, helpText, parseRequest, requestsFloatFilter, shouldReply } from './skin-price.mjs';
 import { interpretItems, requestedRates, telegramPhoto } from './gemini.mjs';
 
 export function createHandler({ token, secret, botUsername, geminiKey = '' }, fetchFn = fetch) {
@@ -39,10 +39,13 @@ export function createHandler({ token, secret, botUsername, geminiKey = '' }, fe
       else if (geminiKey) {
         try {
           const image = await telegramPhoto(message.photo, token, fetchFn);
+          const aiTask = interpretItems({ text, image, candidates: catalogHintsForText(text), apiKey: geminiKey, fetchFn })
+            .catch((error) => { console.warn('AI item recognition unavailable:', error instanceof Error ? error.message : String(error)); return null; });
           const direct = image ? null : await buildReply(text, botUsername, fetchFn);
-          if (direct && !direct.some((part) => /no matching item found|could mean:|Send \/price followed by/i.test(part))) replies = direct;
+          if (direct && !direct.some((part) => /no matching item found|Send \/price followed by/i.test(part))) replies = direct;
           else {
-            let items = await interpretItems({ text, image, apiKey: geminiKey, fetchFn });
+            let items = await aiTask;
+            items ||= [];
             if (!image) items = items.filter((candidate) => aiItemSupportedByText(text, candidate));
             replies = items.length
               ? await buildParsedReply({ items, rates: requestedRates(text, parseRequest) }, fetchFn)
