@@ -77,6 +77,7 @@ export function startMessengerListener(config, ClientClass = Client) {
   let accountId = '';
   const startedAt = Date.now();
   const seenMessages = new Set();
+  let diagnosticEvents = 0;
 
   const connect = async () => {
     if (connecting || stopped || client?.isConnected) return;
@@ -89,11 +90,13 @@ export function startMessengerListener(config, ClientClass = Client) {
       client = active;
       active.on('message', (incoming) => {
         const event = { ...incoming, messageId: incoming.id, timestamp: Number(incoming.timestampMs) };
-        if (String(event.threadId) === String(config.threadId)) {
-          console.log('Messenger group event received', {
+        const targetGroup = String(event.threadId) === String(config.threadId);
+        if (targetGroup || diagnosticEvents++ < 5) {
+          console.log('Messenger message event', {
+            targetGroup,
             ownMessage: String(event.senderId) === String(accountId),
+            ageSeconds: Number.isFinite(event.timestamp) ? Math.round((Date.now() - event.timestamp) / 1000) : null,
             textLength: String(event.text || '').length,
-            attachmentCount: event.attachments?.length || 0,
           });
         }
         if (Number.isFinite(event.timestamp) && event.timestamp < startedAt - 5_000) return;
@@ -111,10 +114,13 @@ export function startMessengerListener(config, ClientClass = Client) {
       });
       active.on('error', (error) => console.error('Messenger connection error:', error?.message || String(error)));
       active.on('disconnected', () => console.warn('Messenger listener disconnected'));
-      const { user } = await active.connect();
+      const { user, initialData } = await active.connect();
       accountId = user.id;
       lastConnectedAt = Date.now();
-      console.log('Messenger listener connected to configured account');
+      console.log('Messenger listener connected to configured account', {
+        targetInInitialThreads: initialData.threads.some((thread) => String(thread.id) === String(config.threadId)),
+        initialMessageCount: initialData.messages.length,
+      });
     } catch (error) {
       console.error('Messenger listener connection failed:', error instanceof Error ? error.message : String(error));
       try { await client?.disconnect(); } catch { /* A failed handshake may not have a socket yet. */ }
