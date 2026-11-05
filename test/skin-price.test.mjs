@@ -58,6 +58,8 @@ test('local catalog resolves B the Monster without a catalog request or unrelate
   const noNetwork = () => { throw new Error('Catalog lookup should be local'); };
   assert.deepEqual(await resolveItem('Ak bthemonster ft', noNetwork), { name: 'AK-47 | B the Monster (Field-Tested)' });
   assert.deepEqual(await resolveItem('Ak b the monster ft', noNetwork), { name: 'AK-47 | B the Monster (Field-Tested)' });
+  assert.deepEqual(await resolveItem('Ak gold ft', noNetwork), { name: 'AK-47 | Gold Arabesque (Field-Tested)' });
+  assert.deepEqual(await resolveItem('Occult glove ft', noNetwork), { name: '★ Sport Gloves | Occult (Field-Tested)' });
   assert.deepEqual(await resolveItem('ak nonsense ft', noNetwork), { missing: true });
   assert.equal(aiItemSupportedByText('Ak bthemonster ft', 'AK-47 | Inheritance (Field-Tested)'), false);
   assert.equal(aiItemSupportedByText('Ak bthemonster ft', 'AK-47 | B the Monster (Field-Tested)'), true);
@@ -72,8 +74,11 @@ test('unspecified wear quotes every available base wear', async () => {
 
 test('does not present an unfiltered base quote as a float-filtered quote', async () => {
   const reply = (await buildReply('/price AK redline ft float 0.15–0.18', '', mockFetch)).join('\n');
-  assert.match(reply, /cannot verify the requested float range/);
+  assert.match(reply, /cannot verify a BUFF163 float-range price/);
   assert.doesNotMatch(reply, /¥160\.99/);
+  const bareFloat = (await buildReply('/price Occult glove 0.22', '', mockFetch)).join('\n');
+  assert.match(bareFloat, /recognized the float filter/);
+  assert.doesNotMatch(bareFloat, /no matching item found/);
 });
 
 test('calculates two item prices from one batch with source time', async () => {
@@ -83,12 +88,12 @@ test('calculates two item prices from one batch with source time', async () => {
   assert.match(replies[0], /3\.65 → ₫587,614/);
   assert.match(replies[0], /¥617\.00 CNY/);
   assert.match(replies[0], /3\.65 → ₫2,252,050/);
-  assert.match(replies[0], /Checked 2026-11-05 10:25 UTC/);
+  assert.match(replies[0], /Feed snapshot 2026-11-05 10:25 UTC \(5 min old\)/);
 });
 
 test('marks stale quotes and never turns a missing CNY price into a conversion', async () => {
   const stale = await buildReply('/price AK redline ft rate 3.65', '', mockFetch, Date.parse('2026-11-05T13:00:00Z'));
-  assert.match(stale[0], /stale\/uncertain/);
+  assert.match(stale[0], /May miss newer listings/);
   const noCny = async (url, options) => url.includes('/items?') ? mockFetch(url, options) : {
     ok: true, json: async () => ({ data: { 'AK-47 | Redline (Field-Tested)': { buff: { ask: 23.98, currency: 'USD' } } } }),
   };
@@ -158,7 +163,7 @@ test('Gamma Doppler Phase 2 uses the filtered phase listing, including abbreviat
   const reply = (await buildReply('karmabit gamma dop phase 2', '', fetchFn, Date.parse('2026-11-05T10:30:00Z'))).join('\n');
   assert.match(reply, /Karambit \| Gamma Doppler \(Factory New\) · Phase 2/);
   assert.match(reply, /¥12,849\.50 CNY/);
-  assert.match(reply, /Phase 2 lowest ask/);
+  assert.match(reply, /Phase 2 feed ask/);
   assert.doesNotMatch(reply, /Minimal Wear/);
   assert.match(reply, /3\.78 → ₫48,571,110   \|   3\.80 → ₫48,828,100/);
   assert.doesNotMatch(reply, /¥8,800\.00 CNY|no matching item found/);

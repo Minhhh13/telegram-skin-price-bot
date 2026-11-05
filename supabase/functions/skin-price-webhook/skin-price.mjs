@@ -3,13 +3,13 @@ import { itemNames } from './catalog.mjs';
 const API = 'https://api.openskin.dev/v1';
 const DEFAULT_RATES = [3.6, 3.65, 3.7, 3.75, 3.78, 3.8];
 const MAX_ITEMS = 10;
-const MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const MAX_AGE_MS = 10 * 60 * 1000;
 
 export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK Redline</code>\n\nLeave out wear to see all available wears, or add FT, MW, FN, WW, or BS for one wear. Separate multiple skins with semicolons, commas, or new lines.\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. By default the bot shows 3.60–3.80 in 0.05 steps, plus 3.78, two rates per row.\n\nFor Dopplers, include a style such as Phase 2 to quote the lowest listing with that style filter. Exact float, paint seed and sticker filters are not available through this free price feed. Quotes are observed prices, not guaranteed trade prices.`;
-export const floatFilterUnavailable = 'A BUFF163 float-filtered quote needs BUFF listing access. The free OpenSkin feed only has the base listing price, so I cannot verify the requested float range yet.';
+export const floatFilterUnavailable = 'I recognized the float filter, but cannot verify a BUFF163 float-range price. OpenSkin provides the general item ask, not individual BUFF listings by float. Please check the selected float range on BUFF; I will not quote the unfiltered price as its base.';
 
 export function requestsFloatFilter(text) {
-  return /\b(?:float|paint\s*wear|paintwear)\b/i.test(String(text || ''));
+  return /\b(?:float|paint\s*wear|paintwear|0\.\d{1,6})\b/i.test(String(text || ''));
 }
 
 export function escapeHtml(value) {
@@ -47,7 +47,7 @@ export function parseRequest(input, botUsername = '') {
 
 const alias = new Map([
   ['ak', 'ak47'], ['ak47', 'ak47'], ['m4', 'm4a4'], ['m4a1s', 'm4a1s'], ['m4a4', 'm4a4'],
-  ['deagle', 'deserteagle'], ['glock', 'glock18'], ['usp', 'usps'],
+  ['deagle', 'deserteagle'], ['glock', 'glock18'], ['usp', 'usps'], ['glove', 'gloves'],
   ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['ouvenir', 'souvenir'], ['dlore', 'dragonlore'],
   ['fn', 'factorynew'], ['mw', 'minimalwear'], ['ft', 'fieldtested'],
   ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'],
@@ -92,7 +92,10 @@ function distance(a, b, max = 3) {
 function resolveFromCatalog(query, entries) {
   const tokens = [...new Set(normalizedTokens(query))];
   const baseTokens = tokens.filter((token) => !special.has(token) && !ignored.has(token));
-  const compact = baseTokens.join('');
+  let compact = baseTokens.join('');
+  const gloveHint = compact.endsWith('gloves') || compact.startsWith('gloves');
+  if (compact.endsWith('gloves') && compact !== 'gloves') compact = compact.slice(0, -6);
+  else if (compact.startsWith('gloves') && compact !== 'gloves') compact = compact.slice(6);
   const weapon = weaponNames.find((name) => compact.startsWith(name)) || '';
   const wear = tokens.find((token) => wears.has(token)) || '';
   const souvenir = tokens.includes('souvenir');
@@ -103,12 +106,15 @@ function resolveFromCatalog(query, entries) {
   const ranked = [];
   for (const entry of entries) {
     if (weapon && entry.weapon !== weapon) continue;
+    if (gloveHint && !entry.weapon.endsWith('gloves')) continue;
     if (wear && entry.wear !== wear) continue;
     if (entry.souvenir !== souvenir || entry.stattrak !== stattrak) continue;
     if (tokens.includes('doppler') && !tokens.includes('gamma') && entry.finish.includes('gamma')) continue;
     if (!entry.finish) continue;
-    const error = entry.finish === finishKey ? 0 : distance(finishKey, entry.finish, maxError);
-    if (error <= maxError) ranked.push({ entry, error });
+    const error = entry.finish === finishKey ? 0
+      : finishKey.length >= 4 && entry.finish.startsWith(finishKey) ? 0.5
+      : distance(finishKey, entry.finish, maxError);
+    if (error <= maxError || error === 0.5) ranked.push({ entry, error });
   }
   if (!ranked.length) return { missing: true };
   const best = Math.min(...ranked.map((r) => r.error));
@@ -175,17 +181,18 @@ function formatQuote(name, result, rates, now) {
   const observed = Date.parse(buff.updated_at || '');
   const age = Number.isFinite(observed) ? now - observed : Infinity;
   const freshness = Number.isFinite(observed) ? new Date(observed).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'unknown time';
+  const ageLabel = Number.isFinite(observed) && age >= 0 ? ` (${Math.floor(age / 60_000)} min old)` : '';
   const source = /^https:\/\/buff\.163\.com\/goods\/\d+$/.test(result?.links?.buff || '')
     ? ` · <a href="${result.links.buff}">${result.phasePattern ? `BUFF item (select ${escapeHtml(result.phasePattern)})` : 'BUFF listing'}</a>` : '';
   const stale = age > MAX_AGE_MS || age < -5 * 60 * 1000;
   const lines = [`<b>${escapeHtml(name)}</b>`];
   if (result.phasePattern) lines.push(`Style filter: <b>${escapeHtml(result.phasePattern)}</b>`);
   else if (/\bdoppler\b/i.test(name)) lines.push('Style filter: All styles (unfiltered)');
-  lines.push(`<b>¥${ask.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY</b> · BUFF163 ${result.phasePattern ? `${escapeHtml(result.phasePattern)} ` : ''}lowest ask${source}`);
+  lines.push(`<b>¥${ask.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY</b> · BUFF163 ${result.phasePattern ? `${escapeHtml(result.phasePattern)} ` : ''}feed ask${source}`);
   for (let i = 0; i < rates.length; i += 2) {
     lines.push(`<code>${rates.slice(i, i + 2).map((rate) => `${formatRate(rate)} → ₫${vnd(ask, rate)}`).join('   |   ')}</code>`);
   }
-  lines.push(`Checked ${freshness}${stale ? ' ⚠️ stale/uncertain' : ''}`);
+  lines.push(`Feed snapshot ${freshness}${ageLabel}${stale ? ' ⚠️ May miss newer listings' : ''}`);
   return lines.join('\n') + '\n';
 }
 

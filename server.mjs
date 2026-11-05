@@ -25,6 +25,8 @@ const messengerConfig = {
   threadId: process.env.MESSENGER_THREAD_ID || '',
   geminiKey: process.env.GEMINI_API_KEY || '',
 };
+let discordClient = null;
+let messengerListener = null;
 
 async function connectIntegrations() {
   const token = process.env.TELEGRAM_SKIN_BOT_TOKEN;
@@ -46,12 +48,12 @@ async function connectIntegrations() {
     await registerDiscordCommand(discordConfig);
     if (discordConfig.botToken) console.log('Discord /buff command registered');
   } catch (error) { console.error('Discord command setup failed:', error instanceof Error ? error.message : String(error)); }
-  try { await startDiscordGateway(discordConfig); }
+  try { discordClient = await startDiscordGateway(discordConfig); }
   catch (error) { console.error('Discord channel listener setup failed:', error instanceof Error ? error.message : String(error)); }
-  startMessengerListener(messengerConfig);
+  messengerListener = startMessengerListener(messengerConfig);
 }
 
-createServer(async (req, res) => {
+const server = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('ok');
@@ -90,5 +92,13 @@ createServer(async (req, res) => {
 }).listen(port, '0.0.0.0', () => {
   console.log(`Skin price webhook listening on ${port}`);
   void connectIntegrations();
+});
+
+process.on('SIGTERM', () => {
+  console.log('Shutting down chat listeners');
+  discordClient?.destroy();
+  messengerListener?.stop();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 5000).unref();
 });
 

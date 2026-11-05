@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "discord.js": "^14.28.1",
-    "messagix-js": "^0.1.0",
-    "pino-pretty": "^13.2.0"
+    "meta-messenger.js": "^1.1.3"
   }
 }

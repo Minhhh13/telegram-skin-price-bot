@@ -1,14 +1,9 @@
-import { createRequire } from 'node:module';
+import { Client, Utils } from 'meta-messenger.js';
 import { lookupDiscord } from './discord.mjs';
 import { imageFromBytes } from './supabase/functions/skin-price-webhook/gemini.mjs';
 
-// The package's ESM entry imports tweetnacl as named exports from CommonJS.
-// Its CommonJS entry works on the Node runtime used by Render.
-const { AttachmentType, CookieManager, MessengerClient, Platform } = createRequire(import.meta.url)('messagix-js');
-
 const MAX_IMAGE_BYTES = 5_000_000;
 const RETRY_MS = 30_000;
-const POLL_MS = 45_000;
 
 export function parseMessengerRequest(event, accountId, threadId) {
   if (!threadId || String(event?.threadId) !== String(threadId) ||
@@ -31,7 +26,7 @@ export function messengerText(markdown) {
 
 async function firstImage(event, fetchFn) {
   const attachment = event.attachments?.find((item) =>
-    item.attachmentType === AttachmentType.Image && item.url);
+    (item.type === 'image' || item.type === 'photo') && item.url);
   if (!attachment) return null;
   const url = new URL(attachment.url);
   if (url.protocol !== 'https:' || !/(^|\.)(?:fbcdn\.net|fbsbx\.com)$/.test(url.hostname)) {
@@ -69,7 +64,7 @@ export async function answerMessengerMessage(client, event, config, fetchFn = fe
   return true;
 }
 
-export function startMessengerListener(config, ClientClass = MessengerClient) {
+export function startMessengerListener(config, ClientClass = Client) {
   if (!config.cookies || !config.threadId) {
     console.log('Messenger listener not configured');
     return null;
@@ -78,62 +73,59 @@ export function startMessengerListener(config, ClientClass = MessengerClient) {
   let connecting = false;
   let stopped = false;
   let retryTimer = null;
-  let pollTimer = null;
-  let polling = false;
   let lastConnectedAt = 0;
+  let accountId = '';
   const startedAt = Date.now();
   const seenMessages = new Set();
 
   const connect = async () => {
-    if (connecting || stopped || client?.isConnected()) return;
+    if (connecting || stopped || client?.isConnected) return;
     connecting = true;
     try {
-      const cookies = CookieManager.fromString(Platform.Messenger, config.cookies);
-      const active = new ClientClass({ platform: Platform.Messenger, cookies: cookies.getAll(), enableE2EE: false });
+      if (client) await client.disconnect().catch(() => {});
+      const active = new ClientClass(Utils.parseCookies(config.cookies), {
+        platform: 'messenger', enableE2EE: false, autoReconnect: true, logLevel: 'error',
+      });
       client = active;
-      active.on('message', (event) => {
+      active.on('message', (incoming) => {
+        const event = { ...incoming, messageId: incoming.id, timestamp: Number(incoming.timestampMs) };
         if (String(event.threadId) === String(config.threadId)) {
           console.log('Messenger group event received', {
-            ownMessage: String(event.senderId) === String(active.getUserId()),
+            ownMessage: String(event.senderId) === String(accountId),
             textLength: String(event.text || '').length,
             attachmentCount: event.attachments?.length || 0,
           });
         }
-        const timestamp = event.timestamp instanceof Date ? event.timestamp.getTime() : Number(event.timestamp);
-        if (Number.isFinite(timestamp) && timestamp < startedAt - 5_000) return;
+        if (Number.isFinite(event.timestamp) && event.timestamp < startedAt - 5_000) return;
         if (event.messageId && seenMessages.has(event.messageId)) return;
         if (event.messageId) {
           seenMessages.add(event.messageId);
           if (seenMessages.size > 500) seenMessages.delete(seenMessages.values().next().value);
         }
-        void answerMessengerMessage(active, event, config).catch((error) =>
+        const bridge = {
+          getUserId: () => accountId,
+          sendMessage: (threadId, text, options) => active.sendMessage(BigInt(threadId), { text, replyToId: options?.replyToMessageId }),
+        };
+        void answerMessengerMessage(bridge, event, config).catch((error) =>
           console.error('Messenger reply failed:', error instanceof Error ? error.message : String(error)));
       });
       active.on('error', (error) => console.error('Messenger connection error:', error?.message || String(error)));
       active.on('disconnected', () => console.warn('Messenger listener disconnected'));
-      await active.loadMessagesPage();
-      await active.connect();
+      const { user } = await active.connect();
+      accountId = user.id;
       lastConnectedAt = Date.now();
       console.log('Messenger listener connected to configured account');
-      await active.getMessages(config.threadId);
     } catch (error) {
       console.error('Messenger listener connection failed:', error instanceof Error ? error.message : String(error));
-      try { client?.disconnect(); } catch { /* A failed handshake may not have a socket yet. */ }
+      try { await client?.disconnect(); } catch { /* A failed handshake may not have a socket yet. */ }
       client = null;
     } finally { connecting = false; }
   };
 
   void connect();
-  retryTimer = setInterval(() => { if (!client?.isConnected()) void connect(); }, RETRY_MS);
-  pollTimer = setInterval(async () => {
-    if (polling || !client?.isConnected()) return;
-    polling = true;
-    try { await client.getMessages(config.threadId); }
-    catch (error) { console.error('Messenger group sync failed:', error instanceof Error ? error.message : String(error)); }
-    finally { polling = false; }
-  }, POLL_MS);
+  retryTimer = setInterval(() => { if (!client?.isConnected) void connect(); }, RETRY_MS);
   return {
-    status: () => ({ connected: Boolean(client?.isConnected()), lastConnectedAt }),
-    stop: () => { stopped = true; clearInterval(retryTimer); clearInterval(pollTimer); client?.disconnect(); },
+    status: () => ({ connected: Boolean(client?.isConnected), lastConnectedAt }),
+    stop: () => { stopped = true; clearInterval(retryTimer); void client?.disconnect(); },
   };
 }

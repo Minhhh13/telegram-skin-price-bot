@@ -7,6 +7,7 @@ test('plain Discord messages are scoped to the dedicated channel and use the sty
   const config = { guildId: 'our-guild', channelId: 'buff-channel', applicationId: '1567887370886320190', geminiKey: '' };
   const sent = [];
   const message = {
+    id: '123456789012345679',
     author: { bot: false, id: '123456789012345678' }, guildId: 'our-guild', channelId: 'buff-channel',
     content: '<@1567887370886320190> karmabit gamma dop phase 2', attachments: { size: 0 },
     channel: { sendTyping: async () => {}, send: async (value) => sent.push(value) },
@@ -38,5 +39,7 @@ test('plain Discord messages are scoped to the dedicated channel and use the sty
   assert.match(sent[0].content, /¥12,849\.50 CNY/);
   assert.match(sent[0].content, /3\.78 → ₫48,571,110   \|   3\.80 → ₫48,828,100/);
   assert.equal(sent[0].flags, MessageFlags.SuppressEmbeds);
+  assert.equal(sent[0].nonce, '123456789012345679:0');
+  assert.equal(sent[0].enforceNonce, true);
   assert.deepEqual(sent[0].allowedMentions, { parse: [], users: ['123456789012345678'], repliedUser: true });
 });

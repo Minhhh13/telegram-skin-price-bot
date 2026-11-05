@@ -1,6 +1,6 @@
 # BUFF163 skin price bot for Telegram and Discord
 
-Standalone on-demand lookup for up to 10 CS2 items per request. It resolves names against a local snapshot of the [OpenSkin free item catalog](https://openskin.dev/) and requests current BUFF163 CNY lowest asks from OpenSkin only for the resolved names. This keeps routine name matching fast and prevents AI from substituting an unrelated item. No OpenSkin account, paid model or scrape session is required. A CNY→VND rate of `3.65` means **3,650 VND per CNY**. The bot uses no Trade Desk data or code.
+Standalone on-demand lookup for up to 10 CS2 items per request. It resolves names against a local snapshot of the [OpenSkin free item catalog](https://openskin.dev/) and requests BUFF163 CNY feed prices from OpenSkin only for the resolved names. This keeps routine name matching fast and prevents AI from substituting an unrelated item. OpenSkin snapshots can lag BUFF's live listings, so replies show the source timestamp and warn after ten minutes. No OpenSkin account, paid model or scrape session is required. A CNY→VND rate of `3.65` means **3,650 VND per CNY**. The bot uses no Trade Desk data or code.
 
 Refresh the catalog after new CS2 items are released with `npm run sync:catalog`, then redeploy. The snapshot currently contains 38,043 item names. Text requests use the local catalog first; Gemini handles photos and unclear text, and its text suggestions must agree with the requested skin name before any price is quoted.
 
@@ -15,7 +15,7 @@ Add the bot to a Telegram group. Members can send:
 AWP | Asiimov (Field-Tested) rates 3.6, 3.65, 3.7
 ```
 
-Members can also mention or reply to the bot and ask for a base price in ordinary language or attach a JPEG/PNG screenshot under 5 MB. Telegram's default bot privacy mode remains on. When `GEMINI_API_KEY` is configured, only messages and images addressed to the bot go to Gemini 3.5 Flash-Lite's free tier for item-name recognition. Gemini never supplies prices. If a name lacks wear, the bot quotes all available base wears; if it could refer to several weapons, the bot lists matching names and requests the exact one. A price is never fabricated from a USD conversion or another marketplace. Quotes older than two hours are marked stale. Explicit float requests receive an unavailable message because the free OpenSkin feed cannot filter BUFF listings by float.
+Members can also mention or reply to the bot and ask for a base price in ordinary language or attach a JPEG/PNG screenshot under 5 MB. Telegram's default bot privacy mode remains on. When `GEMINI_API_KEY` is configured, only messages and images addressed to the bot go to Gemini 3.5 Flash-Lite's free tier for item-name recognition. Gemini never supplies prices. If a name lacks wear, the bot quotes all available base wears; if it could refer to several weapons, the bot lists matching names and requests the exact one. A price is never fabricated from a USD conversion or another marketplace. Quotes older than ten minutes are marked as possibly missing newer listings. Explicit float requests receive an unavailable message because the free OpenSkin feed cannot filter BUFF listings by float.
 
 The default conversion shows `3.60`, `3.65`, `3.70`, `3.75`, `3.78`, and `3.80`, with two rates per row. A request may override this with 1–12 rates. Values like `3650` are accepted as equivalent to `3.65`. All conversion values are rounded to the nearest VND. Doppler requests can specify Phase 1–4, Ruby, Sapphire, Black Pearl, or Emerald; the response shows the selected style and uses OpenSkin's BUFF style price. The BUFF link opens the item page, where the user must select the same style filter to verify the listing. Exact float range and paint seed filters are not supported by this free feed.
 
@@ -27,7 +27,7 @@ The always-on Render Starter instance points Discord's Interactions Endpoint dir
 
 ## Messenger
 
-The existing Render Node service also runs a Messenger listener using the clone account, scoped to the configured TradeDesk group. Send `!buff awp long dog ft`. The clone signs in, but live group message delivery has not yet passed an end-to-end test, so Messenger replies are not currently reliable. Photo and actual mention handling also remain unverified. Discord and Telegram use the same OpenSkin lookup engine independently of this listener.
+The existing Render Node service also runs a Messenger listener using the clone account, scoped to the configured TradeDesk group. Send `!buff awp long dog ft` or tag `@Thang Manh Nguyen` followed by skin names. The newer LightSpeed client must still pass an end-to-end live group test before Messenger replies can be called reliable. Discord and Telegram use the same OpenSkin lookup engine independently of this listener.
 
 Set these two Render environment variables on the **same** web service:
 
@@ -36,7 +36,7 @@ MESSENGER_THREAD_ID=<exact approved group thread ID>
 MESSENGER_COOKIES=<clone account's Cookie request-header value from messenger.com>
 ```
 
-Keep the complete cookie string only in Render's secret environment setting. Do not send it in chat, commit it, or use the primary Facebook account. When both variables are present, the service logs a connection result at startup and retries a disconnected session. A browser login does not transfer to Render by itself. The Messenger client uses an unofficial protocol and may stop working when Meta changes it or the session expires; a fresh clone session may then be needed. The implementation uses [messagix-js](https://www.npmjs.com/package/messagix-js), which is AGPL-3.0-or-later licensed.
+Keep the complete cookie string only in Render's secret environment setting. Do not send it in chat, commit it, or use the primary Facebook account. When both variables are present, the service logs a connection result at startup and retries a disconnected session. A browser login does not transfer to Render by itself. The Messenger client uses an unofficial protocol and may stop working when Meta changes it or the session expires; a fresh clone session may then be needed. The implementation uses [meta-messenger.js](https://github.com/yumi-team/meta-messenger.js).
 
 Required Render environment variables for Discord:
 

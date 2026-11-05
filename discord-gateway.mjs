@@ -37,6 +37,7 @@ export async function answerChannelMessage(message, config, fetchFn = fetch) {
         content: index === 0 && userId ? `<@${userId}>\n${content}` : content,
         allowedMentions: userId ? { parse: [], users: [userId], repliedUser: true } : { parse: [] },
         flags: MessageFlags.SuppressEmbeds,
+        ...(message.id ? { nonce: `${message.id}:${index}`, enforceNonce: true } : {}),
       };
       if (index === 0) await message.reply(options);
       else await message.channel.send(options);
