@@ -1,9 +1,14 @@
 const API = 'https://api.openskin.dev/v1';
-const DEFAULT_RATES = Array.from({ length: 27 }, (_, i) => Number((3.5 + i / 100).toFixed(2)));
+const DEFAULT_RATES = [...Array.from({ length: 6 }, (_, i) => Number((3.5 + i * 0.05).toFixed(2))), 3.76];
 const MAX_ITEMS = 10;
 const MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
-export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK-47 | Redline (Field-Tested)</code>\n\nFor multiple skins, separate names with a semicolon or a new line:\n<code>/price AK-47 | Redline (Field-Tested); AWP | Asiimov (Field-Tested)</code>\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. Without a rate, the bot shows every 0.01 from 3.50 through 3.76.\n\n“Base price” means the cheapest current BUFF163 listing for the exact item and wear. Float, stickers, phases and special patterns can cost more. Quotes are observed prices, not guaranteed trade prices.`;
+export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK Redline</code>\n\nLeave out wear to see all available wears, or add FT, MW, FN, WW, or BS for one wear. Separate multiple skins with semicolons, commas, or new lines.\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. Without a rate, the bot shows 3.50–3.75 in 0.05 steps, plus 3.76.\n\n“Base price” means the cheapest current BUFF163 listing for the exact item and wear. Float and sticker filters are not available through this free price feed. Quotes are observed prices, not guaranteed trade prices.`;
+export const floatFilterUnavailable = 'A BUFF163 float-filtered quote needs BUFF listing access. The free OpenSkin feed only has the base listing price, so I cannot verify the requested float range yet.';
+
+export function requestsFloatFilter(text) {
+  return /\b(?:float|paint\s*wear|paintwear)\b/i.test(String(text || ''));
+}
 
 export function escapeHtml(value) {
   return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -39,7 +44,7 @@ export function parseRequest(input, botUsername = '') {
 }
 
 const alias = new Map([
-  ['ak', 'ak47'], ['ak47', 'ak47'], ['m4a1s', 'm4a1s'], ['m4a4', 'm4a4'],
+  ['ak', 'ak47'], ['ak47', 'ak47'], ['m4', 'm4a4'], ['m4a1s', 'm4a1s'], ['m4a4', 'm4a4'],
   ['fn', 'factorynew'], ['mw', 'minimalwear'], ['ft', 'fieldtested'],
   ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'],
 ]);
@@ -47,6 +52,7 @@ const alias = new Map([
 function normalizedTokens(value) {
   let cleaned = value.toLowerCase().replaceAll('stat trak', 'stattrak').replaceAll('stat-trak', 'stattrak');
   cleaned = cleaned.replace(/field[\s-]*tested/g, ' fieldtested ').replace(/factory[\s-]*new/g, ' factorynew ')
+    .replace(/dragon[\s-]*lore/g, ' dragon lore ')
     .replace(/minimal[\s-]*wear/g, ' minimalwear ').replace(/well[\s-]*worn/g, ' wellworn ')
     .replace(/battle[\s-]*scarred/g, ' battlescarred ').replace(/m4a1[\s-]*s/g, ' m4a1s ')
     .replace(/ak[\s-]*47/g, ' ak47 ');
@@ -74,17 +80,42 @@ export async function resolveItem(query, fetchFn = fetch) {
     const candidate = new Set(normalizedTokens(entry.name));
     return tokens.every((token) => candidate.has(token));
   });
+  if (tokens.includes('doppler') && !tokens.includes('gamma')) {
+    matches = matches.filter((entry) => !normalizedTokens(entry.name).includes('gamma'));
+  }
   const exact = matches.find((entry) => entry.name.toLowerCase() === query.toLowerCase());
   if (exact) return { name: exact.name };
   const explicitlySpecial = tokens.includes('stattrak') || tokens.includes('souvenir');
   if (!explicitlySpecial) matches = matches.filter((entry) => !entry.is_stattrak && !entry.is_souvenir && !/^(?:Souvenir|StatTrak)/i.test(entry.name));
   if (matches.length === 1) return { name: matches[0].name };
+  const wearTokens = new Set(['factorynew', 'minimalwear', 'fieldtested', 'wellworn', 'battlescarred']);
+  if (matches.length > 1 && !tokens.some((token) => wearTokens.has(token))) {
+    const baseNames = new Set(matches.map((entry) => entry.name.replace(/ \((?:Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/, '')));
+    if (baseNames.size === 1 && matches.every((entry) => / \((?:Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/.test(entry.name))) {
+      const order = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
+      return { names: matches.map((entry) => entry.name).sort((a, b) => order.findIndex((wear) => a.endsWith(`(${wear})`)) - order.findIndex((wear) => b.endsWith(`(${wear})`))) };
+    }
+  }
   if (matches.length > 1) return { ambiguous: matches.slice(0, 5).map((entry) => entry.name), more: matches.length > 5 };
   return { missing: true };
 }
 
 function formatRate(rate) {
   return rate.toFixed(2);
+}
+
+function extractPattern(query) {
+  const match = String(query).match(/\b(phase\s*[1-4]|black\s*pearl|ruby|sapphire)\b/i);
+  if (!match) return { lookup: query, pattern: '' };
+  const pattern = /^phase/i.test(match[1]) ? `Phase ${match[1].match(/[1-4]/)[0]}`
+    : /^black/i.test(match[1]) ? 'Black Pearl'
+    : match[1][0].toUpperCase() + match[1].slice(1).toLowerCase();
+  let lookup = String(query).slice(0, match.index) + String(query).slice(match.index + match[0].length);
+  lookup = lookup.trim().replace(/\s{2,}/g, ' ');
+  const hasWear = /\b(?:factory\s*new|minimal\s*wear|field\s*tested|well\s*worn|battle\s*scarred|fn|mw|ft|ww|bs)\b/i.test(lookup);
+  const assumedFactoryNew = !hasWear && /\bdoppler\b/i.test(lookup);
+  if (assumedFactoryNew) lookup += ' Factory New';
+  return { lookup, pattern, assumedFactoryNew };
 }
 
 function vnd(cny, rate) {
@@ -100,8 +131,8 @@ function formatQuote(name, result, rates, now) {
   const freshness = Number.isFinite(observed) ? new Date(observed).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'unknown time';
   const source = /^https:\/\/buff\.163\.com\/goods\/\d+$/.test(result?.links?.buff || '') ? ` · <a href="${result.links.buff}">BUFF listing</a>` : '';
   const stale = age > MAX_AGE_MS || age < -5 * 60 * 1000;
-  const lines = [`<b>${escapeHtml(name)}</b>`, `<b>BUFF163 lowest ask: ¥${ask.toFixed(2)} CNY</b>${source}`, `Observed: ${freshness}${stale ? ' ⚠️ stale/uncertain' : ''}`];
-  for (const rate of rates) lines.push(`<code>${formatRate(rate)} → ${vnd(ask, rate)} VND</code>`);
+  const lines = [`<b>${escapeHtml(name)}</b>`, `<b>¥${ask.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY</b> · BUFF163 lowest ask${source}`, `Checked ${freshness}${stale ? ' ⚠️ stale/uncertain' : ''}`, '<b>CNY rate → VND</b>'];
+  for (const rate of rates) lines.push(`<code>${formatRate(rate)}  │  ${vnd(ask, rate)} VND</code>`);
   return lines.join('\n') + '\n';
 }
 
@@ -110,8 +141,11 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
       !Array.isArray(parsed?.rates) || !parsed.rates.length || parsed.rates.some((r) => !Number.isFinite(r) || r < 2 || r > 6)) {
     return [helpText];
   }
-  const resolved = await Promise.all(parsed.items.map(async (item) => ({ query: item, match: await resolveItem(item, fetchFn) })));
-  const names = [...new Set(resolved.filter((r) => r.match.name).map((r) => r.match.name))];
+  const resolved = await Promise.all(parsed.items.map(async (item) => {
+    const variant = extractPattern(item);
+    return { query: item, variant, match: await resolveItem(variant.lookup, fetchFn) };
+  }));
+  const names = [...new Set(resolved.flatMap((r) => r.match.names || (r.match.name ? [r.match.name] : [])))];
   let data = {};
   if (names.length) {
     const batch = await getJson(`${API}/prices/batch`, {
@@ -120,8 +154,28 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
     data = batch.data || {};
   }
   const blocks = ['<b>BUFF163 base prices · CNY → VND</b>\nRate units: 1 CNY = rate × 1,000 VND'];
-  for (const { query, match } of resolved) {
-    if (match.name) blocks.push(formatQuote(match.name, data[match.name], parsed.rates, now));
+  for (const { query, variant, match } of resolved) {
+    if (match.names) {
+      for (const name of match.names) blocks.push(formatQuote(name, data[name], parsed.rates, now));
+      continue;
+    }
+    if (match.name) {
+      if (variant.pattern) {
+        let phase;
+        try {
+          const phaseData = await getJson(`${API}/prices/buff/phases?item=${encodeURIComponent(match.name)}`, {}, fetchFn);
+          phase = phaseData.patterns?.find((entry) => entry.pattern?.toLowerCase() === variant.pattern.toLowerCase());
+        } catch (error) {
+          console.error('BUFF phase lookup failed:', error instanceof Error ? error.message : String(error));
+        }
+        if (!phase) blocks.push(`<b>${escapeHtml(match.name)} · ${escapeHtml(variant.pattern)}</b>\nBUFF163 CNY listing unavailable.`);
+        else {
+          const result = { ...data[match.name], buff: phase };
+          const label = `${match.name} · ${variant.pattern}${variant.assumedFactoryNew ? ' (FN assumed)' : ''}`;
+          blocks.push(formatQuote(label, result, parsed.rates, now));
+        }
+      } else blocks.push(formatQuote(match.name, data[match.name], parsed.rates, now));
+    }
     else if (match.ambiguous) blocks.push(`<b>${escapeHtml(query)}</b> could mean:\n${match.ambiguous.map((name) => `• ${escapeHtml(name)}`).join('\n')}${match.more ? '\n• …' : ''}\nSend the exact name.`);
     else blocks.push(`<b>${escapeHtml(query)}</b>: no matching item found. Include weapon and wear, such as <code>AK-47 | Redline (Field-Tested)</code>.`);
   }
@@ -137,6 +191,7 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
 }
 
 export async function buildReply(input, botUsername = '', fetchFn = fetch, now = Date.now()) {
+  if (requestsFloatFilter(input)) return [floatFilterUnavailable];
   let parsed;
   try { parsed = parseRequest(input, botUsername); }
   catch (error) { return [escapeHtml(error.message) + '\n\n' + helpText]; }

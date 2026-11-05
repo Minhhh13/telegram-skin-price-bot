@@ -1,4 +1,4 @@
-import { buildParsedReply, buildReply, helpText, parseRequest, shouldReply } from './skin-price.mjs';
+import { buildParsedReply, buildReply, floatFilterUnavailable, helpText, parseRequest, requestsFloatFilter, shouldReply } from './skin-price.mjs';
 import { interpretItems, requestedRates, telegramPhoto } from './gemini.mjs';
 
 export function createHandler({ token, secret, botUsername, geminiKey = '' }, fetchFn = fetch) {
@@ -35,13 +35,14 @@ export function createHandler({ token, secret, botUsername, geminiKey = '' }, fe
       const text = message.text || message.caption || '';
       let replies;
       if (/^\/(?:start|help)(?:@\w+)?(?:\s|$)/i.test(text)) replies = [helpText];
+      else if (requestsFloatFilter(text)) replies = [floatFilterUnavailable];
       else if (geminiKey) {
         try {
           const image = await telegramPhoto(message.photo, token, fetchFn);
           const items = await interpretItems({ text, image, apiKey: geminiKey, fetchFn });
           replies = items.length
             ? await buildParsedReply({ items, rates: requestedRates(text, parseRequest) }, fetchFn)
-            : ['I could not identify the exact skin and wear. Please include the weapon, skin name, and wear, or send a clearer photo.'];
+            : ['I could not identify the skin. Please include the weapon and skin name, or send a clearer photo.'];
         } catch (error) {
           console.error('AI item recognition unavailable:', error instanceof Error ? error.message : String(error));
           replies = message.photo ? ['Photo recognition is temporarily unavailable. Please type the skin names.']

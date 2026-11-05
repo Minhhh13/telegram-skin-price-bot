@@ -31,7 +31,7 @@ async function mockFetch(url, options) {
 
 test('parses multiple skins and explicit CNY→VND rates', () => {
   const defaults = parseRequest('/price AK-47 | Redline (Field-Tested)').rates;
-  assert.equal(defaults.length, 27);
+  assert.deepEqual(defaults, [3.5, 3.55, 3.6, 3.65, 3.7, 3.75, 3.76]);
   assert.equal(defaults[0], 3.5);
   assert.equal(defaults.at(-1), 3.76);
   assert.deepEqual(parseRequest('/price AK-47 | Redline (Field-Tested); AWP | Asiimov (Field-Tested) rates 3.6, 3.65'), {
@@ -48,19 +48,35 @@ test('parses multiple skins and explicit CNY→VND rates', () => {
 
 test('resolves abbreviated base item without mixing Souvenir or StatTrak', async () => {
   assert.deepEqual(await resolveItem('AK redline ft', mockFetch), { name: 'AK-47 | Redline (Field-Tested)' });
+  assert.deepEqual(await resolveItem('AK redline', mockFetch), {
+    names: ['AK-47 | Redline (Minimal Wear)', 'AK-47 | Redline (Field-Tested)'],
+  });
   assert.deepEqual(await resolveItem('redline ft', mockFetch), {
     ambiguous: ['AK-47 | Redline (Field-Tested)', 'AWP | Redline (Field-Tested)'], more: false,
   });
+});
+
+test('unspecified wear quotes every available base wear', async () => {
+  const reply = (await buildReply('/price AK redline rate 3.65', '', mockFetch, Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+  assert.match(reply, /AK-47 \| Redline \(Minimal Wear\)/);
+  assert.match(reply, /AK-47 \| Redline \(Field-Tested\)/);
+  assert.doesNotMatch(reply, /StatTrak™|Souvenir AK-47/);
+});
+
+test('does not present an unfiltered base quote as a float-filtered quote', async () => {
+  const reply = (await buildReply('/price AK redline ft float 0.15–0.18', '', mockFetch)).join('\n');
+  assert.match(reply, /cannot verify the requested float range/);
+  assert.doesNotMatch(reply, /¥160\.99/);
 });
 
 test('calculates two item prices from one batch with source time', async () => {
   const replies = await buildReply('/price AK redline ft; AWP asiimov ft rate 3.65', '', mockFetch, Date.parse('2026-11-05T10:30:00Z'));
   assert.equal(replies.length, 1);
   assert.match(replies[0], /¥160\.99 CNY/);
-  assert.match(replies[0], /3\.65 → 587,614 VND/);
+  assert.match(replies[0], /3\.65  │  587,614 VND/);
   assert.match(replies[0], /¥617\.00 CNY/);
-  assert.match(replies[0], /3\.65 → 2,252,050 VND/);
-  assert.match(replies[0], /Observed: 2026-11-05 10:25 UTC/);
+  assert.match(replies[0], /3\.65  │  2,252,050 VND/);
+  assert.match(replies[0], /Checked 2026-11-05 10:25 UTC/);
 });
 
 test('marks stale quotes and never turns a missing CNY price into a conversion', async () => {
@@ -72,6 +88,41 @@ test('marks stale quotes and never turns a missing CNY price into a conversion',
   const missing = await buildReply('/price AK redline ft rate 3.65', '', noCny);
   assert.match(missing[0], /CNY listing unavailable/);
   assert.doesNotMatch(missing[0], /587,614/);
+});
+
+test('natural request resolves three skins and quotes the specified Doppler phase', async () => {
+  const names = [
+    'M4A4 | Howl (Field-Tested)',
+    'AWP | Dragon Lore (Factory New)',
+    '★ Karambit | Doppler (Factory New)',
+    '★ Karambit | Gamma Doppler (Factory New)',
+  ];
+  const requests = [];
+  const fetchItems = async (url, options) => {
+    requests.push(url);
+    if (url.includes('/items?')) {
+      const term = new URL(url).searchParams.get('search').toLowerCase();
+      return { ok: true, json: async () => ({ data: names.filter((name) => name.toLowerCase().includes(term)).map((name) => ({ name })) }) };
+    }
+    if (url.endsWith('/prices/batch')) {
+      const items = JSON.parse(options.body).items;
+      return { ok: true, json: async () => ({ data: Object.fromEntries(items.map((name) => [name, {
+        buff: { native_currency: { code: 'CNY', ask: 100 }, updated_at: observed },
+      }])) }) };
+    }
+    if (url.includes('/prices/buff/phases?')) return { ok: true, json: async () => ({ patterns: [
+      { pattern: 'Phase 1', native_currency: { code: 'CNY', ask: 7000 }, updated_at: observed },
+      { pattern: 'Phase 2', native_currency: { code: 'CNY', ask: 10200 }, updated_at: observed },
+    ] }) };
+    throw new Error('Unexpected URL ' + url);
+  };
+  const reply = (await buildReply('find price for m4 howl ft, awp dragonlore factory new and karambit doppler phase 2', '', fetchItems, Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+  assert.match(reply, /M4A4 \| Howl \(Field-Tested\)/);
+  assert.match(reply, /AWP \| Dragon Lore \(Factory New\)/);
+  assert.match(reply, /Karambit \| Doppler \(Factory New\) · Phase 2 \(FN assumed\)/);
+  assert.match(reply, /¥10,200\.00 CNY/);
+  assert.match(reply, /3\.65  │  37,230,000 VND/);
+  assert.equal(requests.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
 });
 
 test('ignores unrelated group messages and other bots commands', () => {

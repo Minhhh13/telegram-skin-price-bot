@@ -1,5 +1,5 @@
 import { createPublicKey, verify } from 'node:crypto';
-import { buildParsedReply, buildReply, parseRequest } from './supabase/functions/skin-price-webhook/skin-price.mjs';
+import { buildParsedReply, buildReply, floatFilterUnavailable, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
 import { imageFromBytes, interpretItems, requestedRates } from './supabase/functions/skin-price-webhook/gemini.mjs';
 
 const discordApi = 'https://discord.com/api/v10';
@@ -66,8 +66,8 @@ export function createDiscordHandler({ publicKey, applicationId, guildId, channe
           if (!response.ok) throw new Error(`Discord image HTTP ${response.status}`);
           image = imageFromBytes(new Uint8Array(await response.arrayBuffer()));
         }
-        const aiItems = geminiKey ? await interpretItems({ text: item, image, apiKey: geminiKey, fetchFn }) : null;
-        const html = aiItems ? (aiItems.length
+        const aiItems = geminiKey && !requestsFloatFilter(item) ? await interpretItems({ text: item, image, apiKey: geminiKey, fetchFn }) : null;
+        const html = requestsFloatFilter(item) ? [floatFilterUnavailable] : aiItems ? (aiItems.length
           ? await buildParsedReply({ items: aiItems, rates: requestedRates(item, parseRequest) }, fetchFn)
           : ['I could not identify the exact skin and wear. Please provide a clearer name or photo.'])
           : attachment ? ['Photo recognition is not configured yet. Please type the skin names.']
