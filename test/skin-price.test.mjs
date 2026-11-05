@@ -65,6 +65,15 @@ test('local catalog resolves B the Monster without a catalog request or unrelate
   assert.equal(aiItemSupportedByText('Ak bthemonster ft', 'AK-47 | B the Monster (Field-Tested)'), true);
 });
 
+test('local catalog resolves AWP The Prince with omitted article and typo', async () => {
+  for (const query of ['AWP prince', 'AWP the price']) {
+    const result = await resolveItem(query);
+    assert.ok(result.names?.includes('AWP | The Prince (Field-Tested)'), query);
+  }
+  assert.deepEqual(await resolveItem('AWP price'), { needFinish: 'awp' });
+  assert.equal(aiItemSupportedByText('AWP prince ft', 'AWP | The Prince (Field-Tested)'), true);
+});
+
 test('unspecified wear quotes every available base wear', async () => {
   const reply = (await buildReply('/price AK redline rate 3.65', '', mockFetch, Date.parse('2026-11-05T10:30:00Z'))).join('\n');
   assert.match(reply, /AK-47 \| Redline \(Minimal Wear\)/);

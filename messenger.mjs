@@ -78,6 +78,7 @@ export function startMessengerListener(config, ClientClass = Client) {
   const startedAt = Date.now();
   const seenMessages = new Set();
   let diagnosticEvents = 0;
+  let diagnosticRawEvents = 0;
 
   const connect = async () => {
     if (connecting || stopped || client?.isConnected) return;
@@ -85,9 +86,12 @@ export function startMessengerListener(config, ClientClass = Client) {
     try {
       if (client) await client.disconnect().catch(() => {});
       const active = new ClientClass(Utils.parseCookies(config.cookies), {
-        platform: 'messenger', enableE2EE: false, autoReconnect: true, logLevel: 'error',
+        platform: 'facebook', enableE2EE: false, autoReconnect: true, logLevel: 'error',
       });
       client = active;
+      active.on('raw', (event) => {
+        if (diagnosticRawEvents++ < 12) console.log('Messenger raw event type', event.from, event.type);
+      });
       active.on('message', (incoming) => {
         const event = { ...incoming, messageId: incoming.id, timestamp: Number(incoming.timestampMs) };
         const targetGroup = String(event.threadId) === String(config.threadId);
@@ -118,7 +122,8 @@ export function startMessengerListener(config, ClientClass = Client) {
       accountId = user.id;
       lastConnectedAt = Date.now();
       console.log('Messenger listener connected to configured account', {
-        targetInInitialThreads: initialData.threads.some((thread) => String(thread.id) === String(config.threadId)),
+        targetThreadType: initialData.threads.find((thread) => String(thread.id) === String(config.threadId))?.type ?? null,
+        initialTargetMessages: initialData.messages.filter((message) => String(message.threadId) === String(config.threadId)).length,
         initialMessageCount: initialData.messages.length,
       });
     } catch (error) {

@@ -71,8 +71,9 @@ const weapons = new Set(weaponNames);
 function entryFor(name) {
   const [left, right = ''] = name.split('|');
   const tokens = normalizedTokens(name);
+  const finishTokens = normalizedTokens((right || name).replace(/\([^)]*\)/g, '')).filter((token) => !special.has(token));
   return { name, tokens, weapon: right ? normalizedTokens(left).filter((token) => !special.has(token)).join('') : '',
-    finish: normalizedTokens((right || name).replace(/\([^)]*\)/g, '')).filter((token) => !special.has(token)).join(''),
+    finish: finishTokens.join(''), finishNoArticle: finishTokens.filter((token) => token !== 'the').join(''),
     wear: tokens.find((token) => wears.has(token)) || '', souvenir: tokens.includes('souvenir'), stattrak: tokens.includes('stattrak') };
 }
 const catalog = itemNames.map(entryFor);
@@ -90,8 +91,9 @@ function distance(a, b, max = 3) {
 }
 
 function resolveFromCatalog(query, entries) {
-  const tokens = [...new Set(normalizedTokens(query))];
-  const baseTokens = tokens.filter((token) => !special.has(token) && !ignored.has(token));
+  const corrected = String(query).replace(/\bawp\s+the\s+price\b/i, 'awp the prince');
+  const tokens = [...new Set(normalizedTokens(corrected))];
+  const baseTokens = tokens.filter((token) => !special.has(token) && !ignored.has(token) && token !== 'the');
   let compact = baseTokens.join('');
   const gloveHint = compact.endsWith('gloves') || compact.startsWith('gloves');
   if (compact.endsWith('gloves') && compact !== 'gloves') compact = compact.slice(0, -6);
@@ -101,7 +103,7 @@ function resolveFromCatalog(query, entries) {
   const souvenir = tokens.includes('souvenir');
   const stattrak = tokens.includes('stattrak');
   const finishKey = weapon ? compact.slice(weapon.length) : compact;
-  if (!finishKey || finishKey.length < 3) return { missing: true };
+  if (!finishKey || finishKey.length < 3) return weapon ? { needFinish: weapon } : { missing: true };
   const maxError = finishKey.length >= 8 ? 2 : finishKey.length >= 5 ? 1 : 0;
   const ranked = [];
   for (const entry of entries) {
@@ -111,9 +113,10 @@ function resolveFromCatalog(query, entries) {
     if (entry.souvenir !== souvenir || entry.stattrak !== stattrak) continue;
     if (tokens.includes('doppler') && !tokens.includes('gamma') && entry.finish.includes('gamma')) continue;
     if (!entry.finish) continue;
-    const error = entry.finish === finishKey ? 0
-      : finishKey.length >= 4 && entry.finish.startsWith(finishKey) ? 0.5
-      : distance(finishKey, entry.finish, maxError);
+    const error = Math.min(...[...new Set([entry.finish, entry.finishNoArticle])].map((finish) =>
+      finish === finishKey ? 0
+        : finishKey.length >= 4 && finish.startsWith(finishKey) ? 0.5
+        : distance(finishKey, finish, maxError)));
     if (error <= maxError || error === 0.5) ranked.push({ entry, error });
   }
   if (!ranked.length) return { missing: true };
@@ -129,8 +132,8 @@ function resolveFromCatalog(query, entries) {
 }
 
 export function aiItemSupportedByText(source, item) {
-  const finish = normalizedTokens(item.split('|')[1]?.replace(/\([^)]*\)/g, '') || '').join('');
-  const sourceKey = normalizedTokens(source).join('');
+  const finish = normalizedTokens(item.split('|')[1]?.replace(/\([^)]*\)/g, '') || '').filter((token) => token !== 'the').join('');
+  const sourceKey = normalizedTokens(source).filter((token) => token !== 'the').join('');
   if (!finish || !sourceKey) return false;
   if (sourceKey.includes(finish)) return true;
   for (let start = 0; start < sourceKey.length; start++) {
@@ -237,6 +240,7 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
       } else blocks.push(formatQuote(match.name, data[match.name], parsed.rates, now));
     }
     else if (match.ambiguous) blocks.push(`<b>${escapeHtml(query)}</b> could mean:\n${match.ambiguous.map((name) => `• ${escapeHtml(name)}`).join('\n')}${match.more ? '\n• …' : ''}\nSend the exact name.`);
+    else if (match.needFinish) blocks.push(`<b>${escapeHtml(query)}</b>: which skin finish? For example, <code>AWP The Prince FT</code> or <code>AWP Redline FT</code>.`);
     else blocks.push(`<b>${escapeHtml(query)}</b>: no matching item found. Include weapon and wear, such as <code>AK-47 | Redline (Field-Tested)</code>.`);
   }
   const messages = [];
