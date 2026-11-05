@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { createHandler } from './supabase/functions/skin-price-webhook/handler.mjs';
 import { createDiscordHandler, registerDiscordCommand } from './discord.mjs';
+import { startDiscordGateway } from './discord-gateway.mjs';
 
 const handler = createHandler({
   token: process.env.TELEGRAM_SKIN_BOT_TOKEN || '',
@@ -39,6 +40,8 @@ async function connectIntegrations() {
     await registerDiscordCommand(discordConfig);
     if (discordConfig.botToken) console.log('Discord /buff command registered');
   } catch (error) { console.error('Discord command setup failed:', error instanceof Error ? error.message : String(error)); }
+  try { await startDiscordGateway(discordConfig); }
+  catch (error) { console.error('Discord channel listener setup failed:', error instanceof Error ? error.message : String(error)); }
 }
 
 createServer(async (req, res) => {

@@ -1,9 +1,9 @@
 const API = 'https://api.openskin.dev/v1';
-const DEFAULT_RATES = [...Array.from({ length: 6 }, (_, i) => Number((3.5 + i * 0.05).toFixed(2))), 3.76];
+const DEFAULT_RATES = [3.75, 3.78];
 const MAX_ITEMS = 10;
 const MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
-export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK Redline</code>\n\nLeave out wear to see all available wears, or add FT, MW, FN, WW, or BS for one wear. Separate multiple skins with semicolons, commas, or new lines.\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. Without a rate, the bot shows 3.50–3.75 in 0.05 steps, plus 3.76.\n\n“Base price” means the cheapest current BUFF163 listing for the exact item and wear. Float and sticker filters are not available through this free price feed. Quotes are observed prices, not guaranteed trade prices.`;
+export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK Redline</code>\n\nLeave out wear to see all available wears, or add FT, MW, FN, WW, or BS for one wear. Separate multiple skins with semicolons, commas, or new lines.\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. Without a rate, the bot shows 3.75 and 3.78 side by side.\n\nFor Dopplers, include a style such as Phase 2 to quote the lowest listing with that style filter. Exact float, paint seed and sticker filters are not available through this free price feed. Quotes are observed prices, not guaranteed trade prices.`;
 export const floatFilterUnavailable = 'A BUFF163 float-filtered quote needs BUFF listing access. The free OpenSkin feed only has the base listing price, so I cannot verify the requested float range yet.';
 
 export function requestsFloatFilter(text) {
@@ -45,6 +45,7 @@ export function parseRequest(input, botUsername = '') {
 
 const alias = new Map([
   ['ak', 'ak47'], ['ak47', 'ak47'], ['m4', 'm4a4'], ['m4a1s', 'm4a1s'], ['m4a4', 'm4a4'],
+  ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['ouvenir', 'souvenir'],
   ['fn', 'factorynew'], ['mw', 'minimalwear'], ['ft', 'fieldtested'],
   ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'],
 ]);
@@ -52,7 +53,7 @@ const alias = new Map([
 function normalizedTokens(value) {
   let cleaned = value.toLowerCase().replaceAll('stat trak', 'stattrak').replaceAll('stat-trak', 'stattrak');
   cleaned = cleaned.replace(/field[\s-]*tested/g, ' fieldtested ').replace(/factory[\s-]*new/g, ' factorynew ')
-    .replace(/dragon[\s-]*lore/g, ' dragon lore ')
+    .replace(/dragon[\s-]*lore/g, ' dragon lore ').replace(/long[\s-]*dog/g, ' longdog ')
     .replace(/minimal[\s-]*wear/g, ' minimalwear ').replace(/well[\s-]*worn/g, ' wellworn ')
     .replace(/battle[\s-]*scarred/g, ' battlescarred ').replace(/m4a1[\s-]*s/g, ' m4a1s ')
     .replace(/ak[\s-]*47/g, ' ak47 ');
@@ -60,8 +61,8 @@ function normalizedTokens(value) {
 }
 
 function searchTerm(query) {
-  const generic = new Set(['ak47', 'awp', 'm4a1s', 'm4a4', 'fn', 'mw', 'ft', 'ww', 'bs', 'fieldtested', 'factorynew', 'minimalwear', 'wellworn', 'battlescarred', 'stattrak', 'souvenir', 'knife', 'skin', 'price']);
-  const finish = query.split('|')[1]?.split('(')[0]?.trim();
+  const generic = new Set(['ak47', 'awp', 'm4a1s', 'm4a4', 'karambit', 'butterfly', 'bayonet', 'fn', 'mw', 'ft', 'ww', 'bs', 'fieldtested', 'factorynew', 'minimalwear', 'wellworn', 'battlescarred', 'stattrak', 'souvenir', 'knife', 'skin', 'price']);
+  const finish = query.split('|')[1]?.split('(')[0]?.replace(/\b(?:Factory New|Minimal Wear|Field[ -]Tested|Well[ -]Worn|Battle[ -]Scarred|FN|MW|FT|WW|BS)\b/ig, '').trim();
   return finish || normalizedTokens(query).filter((v) => !generic.has(v)).sort((a, b) => b.length - a.length)[0] || query.trim();
 }
 
@@ -105,7 +106,7 @@ function formatRate(rate) {
 }
 
 function extractPattern(query) {
-  const match = String(query).match(/\b(phase\s*[1-4]|black\s*pearl|ruby|sapphire)\b/i);
+  const match = String(query).match(/\b(phase\s*[1-4]|black\s*pearl|ruby|sapphire|emerald)\b/i);
   if (!match) return { lookup: query, pattern: '' };
   const pattern = /^phase/i.test(match[1]) ? `Phase ${match[1].match(/[1-4]/)[0]}`
     : /^black/i.test(match[1]) ? 'Black Pearl'
@@ -113,13 +114,13 @@ function extractPattern(query) {
   let lookup = String(query).slice(0, match.index) + String(query).slice(match.index + match[0].length);
   lookup = lookup.trim().replace(/\s{2,}/g, ' ');
   const hasWear = /\b(?:factory\s*new|minimal\s*wear|field\s*tested|well\s*worn|battle\s*scarred|fn|mw|ft|ww|bs)\b/i.test(lookup);
-  const assumedFactoryNew = !hasWear && /\bdoppler\b/i.test(lookup);
+  const assumedFactoryNew = !hasWear && /\b(?:doppler|dop)\b/i.test(lookup);
   if (assumedFactoryNew) lookup += ' Factory New';
   return { lookup, pattern, assumedFactoryNew };
 }
 
 function vnd(cny, rate) {
-  return Math.round(cny * rate * 1000).toLocaleString('en-US');
+  return Math.round(Math.round(cny * 100) * Math.round(rate * 1000) / 100).toLocaleString('en-US');
 }
 
 function formatQuote(name, result, rates, now) {
@@ -129,10 +130,17 @@ function formatQuote(name, result, rates, now) {
   const observed = Date.parse(buff.updated_at || '');
   const age = Number.isFinite(observed) ? now - observed : Infinity;
   const freshness = Number.isFinite(observed) ? new Date(observed).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'unknown time';
-  const source = /^https:\/\/buff\.163\.com\/goods\/\d+$/.test(result?.links?.buff || '') ? ` · <a href="${result.links.buff}">BUFF listing</a>` : '';
+  const source = /^https:\/\/buff\.163\.com\/goods\/\d+$/.test(result?.links?.buff || '')
+    ? ` · <a href="${result.links.buff}">${result.phasePattern ? `BUFF item (select ${escapeHtml(result.phasePattern)})` : 'BUFF listing'}</a>` : '';
   const stale = age > MAX_AGE_MS || age < -5 * 60 * 1000;
-  const lines = [`<b>${escapeHtml(name)}</b>`, `<b>¥${ask.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY</b> · BUFF163 lowest ask${source}`, `Checked ${freshness}${stale ? ' ⚠️ stale/uncertain' : ''}`, '<b>CNY rate → VND</b>'];
-  for (const rate of rates) lines.push(`<code>${formatRate(rate)}  │  ${vnd(ask, rate)} VND</code>`);
+  const lines = [`<b>${escapeHtml(name)}</b>`];
+  if (result.phasePattern) lines.push(`Style filter: <b>${escapeHtml(result.phasePattern)}</b>`);
+  else if (/\bdoppler\b/i.test(name)) lines.push('Style filter: All styles (unfiltered)');
+  lines.push(`<b>¥${ask.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY</b> · BUFF163 ${result.phasePattern ? `${escapeHtml(result.phasePattern)} ` : ''}lowest ask${source}`);
+  for (let i = 0; i < rates.length; i += 2) {
+    lines.push(`<code>${rates.slice(i, i + 2).map((rate) => `${formatRate(rate)} → ₫${vnd(ask, rate)}`).join('   |   ')}</code>`);
+  }
+  lines.push(`Checked ${freshness}${stale ? ' ⚠️ stale/uncertain' : ''}`);
   return lines.join('\n') + '\n';
 }
 
@@ -170,7 +178,7 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
         }
         if (!phase) blocks.push(`<b>${escapeHtml(match.name)} · ${escapeHtml(variant.pattern)}</b>\nBUFF163 CNY listing unavailable.`);
         else {
-          const result = { ...data[match.name], buff: phase };
+          const result = { ...data[match.name], buff: phase, phasePattern: variant.pattern };
           const label = `${match.name} · ${variant.pattern}${variant.assumedFactoryNew ? ' (FN assumed)' : ''}`;
           blocks.push(formatQuote(label, result, parsed.rates, now));
         }

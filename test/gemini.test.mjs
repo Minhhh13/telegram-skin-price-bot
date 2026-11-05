@@ -13,7 +13,7 @@ test('AI extracts names only; the price still comes from OpenSkin', async () => 
   assert.deepEqual(items, ['AK-47 | Redline (Field-Tested)', 'AWP | Dragon Lore (Field-Tested)']);
   assert.ok(sent.contents[0].parts[0].text.includes('Never supply prices'));
   assert.equal(requestedRates('buff price ak redline ft rate 3.65', parseRequest)[0], 3.65);
-  assert.equal(requestedRates('buff price ak redline ft', parseRequest).length, 7);
+  assert.deepEqual(requestedRates('buff price ak redline ft', parseRequest), [3.75, 3.78]);
 });
 
 test('only a photo addressed to the bot is processed', async () => {

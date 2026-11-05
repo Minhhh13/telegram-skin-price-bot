@@ -38,6 +38,26 @@ export function splitDiscord(text, max = 1900) {
   return chunks;
 }
 
+export async function lookupDiscord(item, image, geminiKey = '', fetchFn = fetch) {
+  if (requestsFloatFilter(item)) return [discordText(floatFilterUnavailable)];
+  let direct = null;
+  if (item.trim() && !image) {
+    direct = await buildReply(item, '', fetchFn);
+    const unresolved = direct.some((part) => /no matching item found|could mean:|Send \/price followed by/i.test(part));
+    if (!unresolved) return splitDiscord(direct.map(discordText).join('\n\n'));
+  }
+  let aiItems = null;
+  if (geminiKey) {
+    try { aiItems = await interpretItems({ text: item, image, apiKey: geminiKey, fetchFn }); }
+    catch (error) { console.warn('Discord AI item recognition unavailable:', error instanceof Error ? error.message : String(error)); }
+  }
+  const html = aiItems?.length
+    ? await buildParsedReply({ items: aiItems, rates: requestedRates(item, parseRequest) }, fetchFn)
+    : image && !item.trim() ? ['Photo recognition is temporarily unavailable. Please type the skin names.']
+    : direct || await buildReply(item, '', fetchFn);
+  return splitDiscord(html.map(discordText).join('\n\n'));
+}
+
 export function createDiscordHandler({ publicKey, applicationId, guildId, channelId, geminiKey = '' }, fetchFn = fetch) {
   return async (headers, body) => {
     if (!publicKey) return { status: 503, body: 'Discord not configured' };
@@ -66,24 +86,14 @@ export function createDiscordHandler({ publicKey, applicationId, guildId, channe
           if (!response.ok) throw new Error(`Discord image HTTP ${response.status}`);
           image = imageFromBytes(new Uint8Array(await response.arrayBuffer()));
         }
-        let aiItems = null;
-        if (geminiKey && !requestsFloatFilter(item)) {
-          try { aiItems = await interpretItems({ text: item, image, apiKey: geminiKey, fetchFn }); }
-          catch (error) { console.warn('Discord AI item recognition unavailable:', error instanceof Error ? error.message : String(error)); }
-        }
-        const html = requestsFloatFilter(item) ? [floatFilterUnavailable] : aiItems ? (aiItems.length
-          ? await buildParsedReply({ items: aiItems, rates: requestedRates(item, parseRequest) }, fetchFn)
-          : ['I could not identify the exact skin and wear. Please provide a clearer name or photo.'])
-          : attachment ? ['Photo recognition is not configured yet. Please type the skin names.']
-          : await buildReply(item, '', fetchFn);
-        messages = splitDiscord(html.map(discordText).join('\n\n'));
+        messages = await lookupDiscord(item, image, geminiKey, fetchFn);
       } catch (error) {
         console.error('Discord lookup failed:', error instanceof Error ? error.message : String(error));
         messages = ['Price lookup is temporarily unavailable. Please try again shortly.'];
       }
       for (let i = 0; i < messages.length; i++) {
         const url = i === 0 ? `${discordApi}/webhooks/${applicationId}/${token}/messages/@original` : `${discordApi}/webhooks/${applicationId}/${token}`;
-        const response = await fetchFn(url, { method: i === 0 ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: messages[i], allowed_mentions: { parse: [] } }), signal: AbortSignal.timeout(9000) });
+        const response = await fetchFn(url, { method: i === 0 ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: messages[i], flags: 4, allowed_mentions: { parse: [] } }), signal: AbortSignal.timeout(9000) });
         if (!response.ok) throw new Error(`Discord response HTTP ${response.status}`);
       }
     })().catch((error) => console.error('Discord response failed:', error instanceof Error ? error.message : String(error)));

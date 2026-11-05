@@ -31,9 +31,7 @@ async function mockFetch(url, options) {
 
 test('parses multiple skins and explicit CNY→VND rates', () => {
   const defaults = parseRequest('/price AK-47 | Redline (Field-Tested)').rates;
-  assert.deepEqual(defaults, [3.5, 3.55, 3.6, 3.65, 3.7, 3.75, 3.76]);
-  assert.equal(defaults[0], 3.5);
-  assert.equal(defaults.at(-1), 3.76);
+  assert.deepEqual(defaults, [3.75, 3.78]);
   assert.deepEqual(parseRequest('/price AK-47 | Redline (Field-Tested); AWP | Asiimov (Field-Tested) rates 3.6, 3.65'), {
     items: ['AK-47 | Redline (Field-Tested)', 'AWP | Asiimov (Field-Tested)'], rates: [3.6, 3.65],
   });
@@ -73,9 +71,9 @@ test('calculates two item prices from one batch with source time', async () => {
   const replies = await buildReply('/price AK redline ft; AWP asiimov ft rate 3.65', '', mockFetch, Date.parse('2026-11-05T10:30:00Z'));
   assert.equal(replies.length, 1);
   assert.match(replies[0], /¥160\.99 CNY/);
-  assert.match(replies[0], /3\.65  │  587,614 VND/);
+  assert.match(replies[0], /3\.65 → ₫587,614/);
   assert.match(replies[0], /¥617\.00 CNY/);
-  assert.match(replies[0], /3\.65  │  2,252,050 VND/);
+  assert.match(replies[0], /3\.65 → ₫2,252,050/);
   assert.match(replies[0], /Checked 2026-11-05 10:25 UTC/);
 });
 
@@ -121,8 +119,59 @@ test('natural request resolves three skins and quotes the specified Doppler phas
   assert.match(reply, /AWP \| Dragon Lore \(Factory New\)/);
   assert.match(reply, /Karambit \| Doppler \(Factory New\) · Phase 2 \(FN assumed\)/);
   assert.match(reply, /¥10,200\.00 CNY/);
-  assert.match(reply, /3\.65  │  37,230,000 VND/);
+  assert.match(reply, /3\.75 → ₫38,250,000   \|   3\.78 → ₫38,556,000/);
   assert.equal(requests.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
+});
+
+test('Gamma Doppler Phase 2 uses the filtered phase listing, including abbreviated request', async () => {
+  const item = '★ Karambit | Gamma Doppler (Factory New)';
+  const otherWear = '★ Karambit | Gamma Doppler (Minimal Wear)';
+  const calls = [];
+  const fetchFn = async (url, options) => {
+    calls.push(url);
+    if (url.includes('/items?')) {
+      const term = new URL(url).searchParams.get('search');
+      assert.equal(term, 'doppler');
+      return { ok: true, json: async () => ({ data: [{ name: item }, { name: otherWear }] }) };
+    }
+    if (url.endsWith('/prices/batch')) return { ok: true, json: async () => ({ data: { [item]: {
+      buff: { native_currency: { code: 'CNY', ask: 8800 }, updated_at: observed },
+    } } }) };
+    if (url.includes('/prices/buff/phases?')) {
+      assert.equal(new URL(url).searchParams.get('item'), item);
+      return { ok: true, json: async () => ({ patterns: [
+        { pattern: 'Phase 1', native_currency: { code: 'CNY', ask: 10800 }, updated_at: observed },
+        { pattern: 'Phase 2', native_currency: { code: 'CNY', ask: 12849.5 }, updated_at: observed },
+      ] }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const reply = (await buildReply('karmabit gamma dop phase 2', '', fetchFn, Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+  assert.match(reply, /Karambit \| Gamma Doppler \(Factory New\) · Phase 2/);
+  assert.match(reply, /¥12,849\.50 CNY/);
+  assert.match(reply, /Phase 2 lowest ask/);
+  assert.doesNotMatch(reply, /Minimal Wear/);
+  assert.match(reply, /3\.75 → ₫48,185,625   \|   3\.78 → ₫48,571,110/);
+  assert.doesNotMatch(reply, /¥8,800\.00 CNY|no matching item found/);
+  assert.equal(calls.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
+});
+
+test('misspelled Souvenir AWP LongDog does not become AWP Duality', async () => {
+  const longDog = 'Souvenir AWP | LongDog (Field-Tested)';
+  const fetchFn = async (url, options) => {
+    if (url.includes('/items?')) {
+      assert.equal(new URL(url).searchParams.get('search'), 'longdog');
+      return { ok: true, json: async () => ({ data: [{ name: longDog }, { name: 'Souvenir AWP | Duality (Field-Tested)' }] }) };
+    }
+    if (url.endsWith('/prices/batch')) return { ok: true, json: async () => ({ data: {
+      [longDog]: { buff: { native_currency: { code: 'CNY', ask: 648.9 }, updated_at: observed } },
+    } }) };
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const reply = (await buildReply('awl long dog ouvenir ft', '', fetchFn, Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+  assert.match(reply, /Souvenir AWP \| LongDog \(Field-Tested\)/);
+  assert.match(reply, /¥648\.90 CNY/);
+  assert.doesNotMatch(reply, /Duality/);
 });
 
 test('ignores unrelated group messages and other bots commands', () => {
