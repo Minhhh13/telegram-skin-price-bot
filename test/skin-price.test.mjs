@@ -162,6 +162,17 @@ test('marks stale quotes and never turns a missing CNY price into a conversion',
   assert.doesNotMatch(missing[0], /587,614/);
 });
 
+test('one transient OpenSkin network failure is retried', async () => {
+  let attempts = 0;
+  const flakyFetch = async (url, options) => {
+    if (url.endsWith('/prices/batch') && attempts++ === 0) throw new TypeError('fetch failed');
+    return mockFetch(url, options);
+  };
+  const reply = (await buildReply('awp redline ft', '', flakyFetch)).join('\n');
+  assert.match(reply, /AWP \| Redline \(Field-Tested\)/);
+  assert.equal(attempts, 2);
+});
+
 test('natural request resolves three skins and quotes the specified Doppler phase', async () => {
   const names = [
     'M4A4 | Howl (Field-Tested)',

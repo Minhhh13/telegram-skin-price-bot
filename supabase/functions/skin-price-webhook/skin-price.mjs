@@ -185,9 +185,17 @@ export function aiItemSupportedByText(source, item) {
 }
 
 async function getJson(url, options = {}, fetchFn = fetch) {
-  const response = await fetchFn(url, { ...options, signal: AbortSignal.timeout(9000) });
-  if (!response.ok) throw new Error(`OpenSkin returned HTTP ${response.status}`);
-  return response.json();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await fetchFn(url, { ...options, signal: AbortSignal.timeout(9000) });
+      if (!response.ok) throw new Error(`OpenSkin returned HTTP ${response.status}`);
+      return response.json();
+    } catch (error) {
+      const retryable = error?.message === 'fetch failed' || /^OpenSkin returned HTTP 5\d\d$/.test(error?.message || '');
+      if (!retryable || attempt === 1) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
 }
 
 export async function resolveItem(query, _fetchFn = fetch, names = null) {
