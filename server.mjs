@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { createHandler } from './supabase/functions/skin-price-webhook/handler.mjs';
 import { createDiscordHandler, registerDiscordCommand } from './discord.mjs';
 import { startDiscordGateway } from './discord-gateway.mjs';
+import { startMessengerListener } from './messenger.mjs';
 
 const handler = createHandler({
   token: process.env.TELEGRAM_SKIN_BOT_TOKEN || '',
@@ -19,6 +20,11 @@ const discordConfig = {
   geminiKey: process.env.GEMINI_API_KEY || '',
 };
 const discordHandler = createDiscordHandler(discordConfig);
+const messengerConfig = {
+  cookies: process.env.MESSENGER_COOKIES || '',
+  threadId: process.env.MESSENGER_THREAD_ID || '',
+  geminiKey: process.env.GEMINI_API_KEY || '',
+};
 
 async function connectIntegrations() {
   const token = process.env.TELEGRAM_SKIN_BOT_TOKEN;
@@ -42,6 +48,7 @@ async function connectIntegrations() {
   } catch (error) { console.error('Discord command setup failed:', error instanceof Error ? error.message : String(error)); }
   try { await startDiscordGateway(discordConfig); }
   catch (error) { console.error('Discord channel listener setup failed:', error instanceof Error ? error.message : String(error)); }
+  startMessengerListener(messengerConfig);
 }
 
 createServer(async (req, res) => {

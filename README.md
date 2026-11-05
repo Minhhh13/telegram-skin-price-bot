@@ -23,6 +23,19 @@ The same Node service exposes `/discord` for a guild-scoped `/buff` command and 
 
 The always-on Render Starter instance points Discord's Interactions Endpoint directly to `https://telegram-skin-price-bot.onrender.com/discord`; the Node handler verifies the Discord signature, immediately defers the command, then sends the price as a follow-up. The older Supabase `discord-bridge` source remains in this repository but is not in the live request path.
 
+## Messenger
+
+The existing Render Node service can also run a Messenger listener using the clone account. It only replies inside the configured TradeDesk group. Send `!buff awp long dog ft` or genuinely mention the clone account and add the skin names. For a screenshot, attach a JPEG or PNG with `!buff` in the caption (or mention the clone account). Photo recognition needs the existing `GEMINI_API_KEY`. The reply appears in the same thread and quotes BUFF163 prices through the same OpenSkin engine used by Discord and Telegram.
+
+Set these two Render environment variables on the **same** web service:
+
+```text
+MESSENGER_THREAD_ID=<exact approved group thread ID>
+MESSENGER_COOKIES=<clone account's Cookie request-header value from messenger.com>
+```
+
+Keep the complete cookie string only in Render's secret environment setting. Do not send it in chat, commit it, or use the primary Facebook account. When both variables are present, the service logs a connection result at startup and retries a disconnected session. A browser login does not transfer to Render by itself. The Messenger client uses an unofficial protocol and may stop working when Meta changes it or the session expires; a fresh clone session may then be needed. The implementation uses [messagix-js](https://www.npmjs.com/package/messagix-js), which is AGPL-3.0-or-later licensed.
+
 Required Render environment variables for Discord:
 
 ```text
