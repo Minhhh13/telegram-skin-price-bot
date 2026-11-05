@@ -74,6 +74,15 @@ test('local catalog resolves AWP The Prince with omitted article and typo', asyn
   assert.equal(aiItemSupportedByText('AWP prince ft', 'AWP | The Prince (Field-Tested)'), true);
 });
 
+test('M9 weapon type stays fixed when the Slaughter finish is abbreviated', async () => {
+  const expected = { name: '★ M9 Bayonet | Slaughter (Factory New)' };
+  for (const query of ['M9 slau fn', 'M9 slaughter fn', 'M9 Bayonet slau FN']) {
+    assert.deepEqual(await resolveItem(query), expected, query);
+  }
+  const otherKnife = await resolveItem('Bayonet slaughter fn');
+  assert.deepEqual(otherKnife, { name: '★ Bayonet | Slaughter (Factory New)' });
+});
+
 test('unspecified wear quotes every available base wear', async () => {
   const reply = (await buildReply('/price AK redline rate 3.65', '', mockFetch, Date.parse('2026-11-05T10:30:00Z'))).join('\n');
   assert.match(reply, /AK-47 \| Redline \(Minimal Wear\)/);
