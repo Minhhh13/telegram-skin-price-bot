@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { answerMessengerMessage, messengerText, parseMessengerRequest } from '../messenger.mjs';
+import { EventEmitter } from 'node:events';
+import { answerMessengerMessage, messengerText, parseMessengerRequest, startMessengerListener } from '../messenger.mjs';
 
 const threadId = '4128828130587827';
 const accountId = '123456';
@@ -35,4 +36,33 @@ test('messages outside the intended group cause no send', async () => {
 test('Messenger formatting uses plain text and a direct source link', () => {
   assert.equal(messengerText('**AWP** · [BUFF listing](https://buff.163.com/goods/123)\n`3.75 → ₫10,000`'),
     'AWP · BUFF listing: https://buff.163.com/goods/123\n3.75 → ₫10,000');
+});
+
+test('inbox refresh answers one new group request and ignores old or duplicate messages', async () => {
+  const sent = [];
+  let connections = 0;
+  class FakeClient extends EventEmitter {
+    connected = false;
+    get isConnected() { return this.connected; }
+    async connect() {
+      this.connected = true;
+      connections++;
+      const timestampMs = BigInt(Date.now());
+      return { user: { id: BigInt(accountId) }, initialData: { threads: [{ id: BigInt(threadId), type: 2 }], messages: [
+        { id: 'old', threadId: BigInt(threadId), senderId: 999n, text: '!buff', timestampMs: timestampMs - 300_000n },
+        ...(connections > 1 ? [{ id: 'fresh', threadId: BigInt(threadId), senderId: 999n, text: '!buff', timestampMs }] : []),
+      ] } };
+    }
+    getCookies() { return { c_user: accountId, xs: 'test' }; }
+    async disconnect() { this.connected = false; }
+    async sendMessage(id, payload) { sent.push({ id, payload }); }
+  }
+  const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId }, FakeClient,
+    { retryMs: 10, snapshotRefreshMs: 20 });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.ok(connections >= 2);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].payload.text, /Send !buff followed by skin names/);
+  } finally { listener.stop(); }
 });
