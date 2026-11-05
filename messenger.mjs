@@ -8,6 +8,7 @@ const { AttachmentType, CookieManager, MessengerClient, Platform } = createRequi
 
 const MAX_IMAGE_BYTES = 5_000_000;
 const RETRY_MS = 30_000;
+const POLL_MS = 45_000;
 
 export function parseMessengerRequest(event, accountId, threadId) {
   if (!threadId || String(event?.threadId) !== String(threadId) ||
@@ -76,6 +77,8 @@ export function startMessengerListener(config, ClientClass = MessengerClient) {
   let connecting = false;
   let stopped = false;
   let retryTimer = null;
+  let pollTimer = null;
+  let polling = false;
   let lastConnectedAt = 0;
   const startedAt = Date.now();
   const seenMessages = new Set();
@@ -121,8 +124,15 @@ export function startMessengerListener(config, ClientClass = MessengerClient) {
 
   void connect();
   retryTimer = setInterval(() => { if (!client?.isConnected()) void connect(); }, RETRY_MS);
+  pollTimer = setInterval(async () => {
+    if (polling || !client?.isConnected()) return;
+    polling = true;
+    try { await client.getMessages(config.threadId); }
+    catch (error) { console.error('Messenger group sync failed:', error instanceof Error ? error.message : String(error)); }
+    finally { polling = false; }
+  }, POLL_MS);
   return {
     status: () => ({ connected: Boolean(client?.isConnected()), lastConnectedAt }),
-    stop: () => { stopped = true; clearInterval(retryTimer); client?.disconnect(); },
+    stop: () => { stopped = true; clearInterval(retryTimer); clearInterval(pollTimer); client?.disconnect(); },
   };
 }
