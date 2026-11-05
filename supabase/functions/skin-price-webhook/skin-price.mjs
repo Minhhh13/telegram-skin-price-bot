@@ -1,9 +1,9 @@
 const API = 'https://api.openskin.dev/v1';
-const DEFAULT_RATES = [3.5, 3.6, 3.65, 3.7, 3.71, 3.72, 3.73, 3.74, 3.75, 3.76];
+const DEFAULT_RATES = Array.from({ length: 27 }, (_, i) => Number((3.5 + i / 100).toFixed(2)));
 const MAX_ITEMS = 10;
 const MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
-export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK-47 | Redline (Field-Tested)</code>\n\nFor multiple skins, separate names with a semicolon or a new line:\n<code>/price AK-47 | Redline (Field-Tested); AWP | Asiimov (Field-Tested)</code>\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. Without a rate, the bot shows 3.50, 3.60, 3.65 and 3.70–3.76.\n\n“Base price” means the cheapest current BUFF163 listing for the exact item and wear. Float, stickers, phases and special patterns can cost more. Quotes are observed prices, not guaranteed trade prices.`;
+export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK-47 | Redline (Field-Tested)</code>\n\nFor multiple skins, separate names with a semicolon or a new line:\n<code>/price AK-47 | Redline (Field-Tested); AWP | Asiimov (Field-Tested)</code>\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. Without a rate, the bot shows every 0.01 from 3.50 through 3.76.\n\n“Base price” means the cheapest current BUFF163 listing for the exact item and wear. Float, stickers, phases and special patterns can cost more. Quotes are observed prices, not guaranteed trade prices.`;
 
 export function escapeHtml(value) {
   return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -145,5 +145,6 @@ export function shouldReply(message, botUsername = '') {
 }
 
 export { DEFAULT_RATES };
+
 
 
