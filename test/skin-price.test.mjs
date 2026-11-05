@@ -179,6 +179,34 @@ test('Gamma Doppler Phase 2 uses the filtered phase listing, including abbreviat
   assert.equal(calls.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
 });
 
+test('M9 gemstone names resolve to the correct BUFF Doppler style filters', async () => {
+  const doppler = '★ M9 Bayonet | Doppler (Factory New)';
+  const gamma = '★ M9 Bayonet | Gamma Doppler (Factory New)';
+  const calls = [];
+  const fetchFn = async (url, options) => {
+    calls.push(url);
+    if (url.endsWith('/prices/batch')) return { ok: true, json: async () => ({ data: Object.fromEntries(
+      JSON.parse(options.body).items.map((name) => [name, { buff: { native_currency: { code: 'CNY', ask: 100 }, updated_at: observed } }]),
+    ) }) };
+    if (url.includes('/prices/buff/phases?')) {
+      const item = new URL(url).searchParams.get('item');
+      return { ok: true, json: async () => ({ patterns: item === gamma
+        ? [{ pattern: 'Emerald', native_currency: { code: 'CNY', ask: 10000 }, updated_at: observed }]
+        : [{ pattern: 'Ruby', native_currency: { code: 'CNY', ask: 9000 }, updated_at: observed }],
+      }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const reply = (await buildReply('/price M9 ruby; M9 emerald; M9 gamma emerald; M9 Bayonet Ruby', '', fetchFn,
+    Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+  assert.match(reply, /M9 Bayonet \| Doppler \(Factory New\) · Ruby/);
+  assert.match(reply, /M9 Bayonet \| Gamma Doppler \(Factory New\) · Emerald/);
+  assert.match(reply, /¥9,000\.00 CNY/);
+  assert.match(reply, /¥10,000\.00 CNY/);
+  assert.doesNotMatch(reply, /which skin finish|no matching item found|¥100\.00 CNY/);
+  assert.equal(calls.filter((url) => url.includes('/prices/buff/phases?')).length, 4);
+});
+
 test('misspelled Souvenir AWP LongDog does not become AWP Duality', async () => {
   const longDog = 'Souvenir AWP | LongDog (Field-Tested)';
   const fetchFn = async (url, options) => {
