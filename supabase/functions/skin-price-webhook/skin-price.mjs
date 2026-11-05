@@ -48,9 +48,9 @@ export function parseRequest(input, botUsername = '') {
 const alias = new Map([
   ['ak', 'ak47'], ['ak47', 'ak47'], ['m4', 'm4a4'], ['m4a1s', 'm4a1s'], ['m4a4', 'm4a4'], ['m9', 'm9bayonet'],
   ['deagle', 'deserteagle'], ['glock', 'glock18'], ['usp', 'usps'], ['glove', 'gloves'],
-  ['butter', 'butterflyknife'], ['btf', 'butterflyknife'],
+  ['butter', 'butterflyknife'], ['btf', 'butterflyknife'], ['talon', 'talonknife'],
   ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['ouvenir', 'souvenir'], ['dlore', 'dragonlore'],
-  ['fn', 'factorynew'], ['mw', 'minimalwear'], ['ft', 'fieldtested'],
+  ['fn', 'factorynew'], ['mw', 'minimalwear'], ['min', 'minimalwear'], ['ft', 'fieldtested'],
   ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'],
 ]);
 
@@ -58,6 +58,7 @@ function normalizedTokens(value) {
   let cleaned = value.toLowerCase().replaceAll('stat trak', 'stattrak').replaceAll('stat-trak', 'stattrak');
   cleaned = cleaned.replace(/field[\s-]*tested/g, ' fieldtested ').replace(/factory[\s-]*new/g, ' factorynew ')
     .replace(/\bm9\s*bayonet\b/g, ' m9 ')
+    .replace(/\btalon\s+knife\b/g, ' talonknife ')
     .replace(/dragon[\s-]*lore/g, ' dragon lore ').replace(/long[\s-]*dog/g, ' longdog ')
     .replace(/minimal[\s-]*wear/g, ' minimalwear ').replace(/well[\s-]*worn/g, ' wellworn ')
     .replace(/battle[\s-]*scarred/g, ' battlescarred ').replace(/m4a1[\s-]*s/g, ' m4a1s ')
@@ -178,7 +179,7 @@ function extractPattern(query) {
   } else if (pattern === 'Emerald' && /\bgamma\b/i.test(lookup) && !/\bdop(?:pler)?\b/i.test(lookup)) {
     lookup += ' Doppler';
   }
-  const hasWear = /\b(?:factory\s*new|minimal\s*wear|field\s*tested|well\s*worn|battle\s*scarred|fn|mw|ft|ww|bs)\b/i.test(lookup);
+  const hasWear = /\b(?:factory\s*new|minimal\s*wear|field\s*tested|well\s*worn|battle\s*scarred|fn|mw|min|ft|ww|bs)\b/i.test(lookup);
   const assumedFactoryNew = !hasWear && /\b(?:doppler|dop)\b/i.test(lookup);
   if (assumedFactoryNew) lookup += ' Factory New';
   return { lookup, pattern, assumedFactoryNew };

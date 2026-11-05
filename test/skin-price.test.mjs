@@ -213,6 +213,10 @@ test('butter gamma p1 fn resolves Butterfly Knife Gamma Doppler Phase 1', async 
   }
 });
 
+test('Talon shorthand and min wear preserve the Ruby style and wear', async () => {
+  assert.deepEqual(await resolveItem('talon doppler min'), { name: '★ Talon Knife | Doppler (Minimal Wear)' });
+});
+
 test('M9 gemstone names resolve to the correct BUFF Doppler style filters', async () => {
   const doppler = '★ M9 Bayonet | Doppler (Factory New)';
   const gamma = '★ M9 Bayonet | Gamma Doppler (Factory New)';

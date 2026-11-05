@@ -17,6 +17,7 @@ export function parseMessengerRequest(event, accountId, threadId) {
   if (!mentioned && !tag) return null;
   const text = raw.replace(/^@?BUFF\s*BOT\s*PRICE\s*CHECKER\b[\s,:-]*/i, '')
     .replace(/^@?Thang\s*Manh\s*Nguyen\b[\s,:-]*/i, '').trim();
+  if (!event.attachments?.length && !/\b(?:buff|price|skin|item|ak(?:-?47)?|awp|m4a?[14]?(?:-?s)?|m9|talon|butter(?:fly)?|btf|kara(?:mbit)?|bayonet|glock|usp|deagle|desert|glove|wraps|doppler|redline|dragon\s*lore|dlore|howl|slaughter|ruby|sapphire|emerald)\b/i.test(text)) return null;
   return { text, hasImage: Boolean(event.attachments?.length) };
 }
 

@@ -14,6 +14,7 @@ test('only !buff and actual account mentions in the intended group trigger a loo
     { text: 'awp redline', hasImage: false });
   assert.deepEqual(parseMessengerRequest({ ...base, text: '@Thang Manh Nguyen ak slate' }, accountId, threadId),
     { text: 'ak slate', hasImage: false });
+  assert.equal(parseMessengerRequest({ ...base, text: '@Thang Manh Nguyen mẹ gia minh' }, accountId, threadId), null);
   assert.equal(parseMessengerRequest({ ...base, threadId: 'competitor-group', text: '@Thang Manh Nguyen ak slate' }, accountId, threadId), null);
   assert.equal(parseMessengerRequest({ ...base, text: 'awp long dog ft' }, accountId, threadId), null);
   assert.equal(parseMessengerRequest({ ...base, threadId: 'competitor-group', text: '!buff awp long dog ft' }, accountId, threadId), null);
