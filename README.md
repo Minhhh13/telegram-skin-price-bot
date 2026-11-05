@@ -19,7 +19,9 @@ The default rate table includes every 0.01 from `3.50` through `3.76` (27 rates)
 
 ## Discord
 
-The same Node service exposes `/discord` for a guild-scoped `/buff` command. It only posts a result in the configured guild and `#buff-botpricer` channel. Example: `/buff items: AK redline ft; AWP asiimov ft`. Members can optionally attach an image when Gemini is configured. The app must be installed in the guild with the `applications.commands` scope. Configure its Interactions Endpoint URL as `https://<service>.onrender.com/discord` in the Discord Developer Portal. The service verifies each Ed25519 signature and registers the guild command on startup.
+The same Node service exposes `/discord` for a guild-scoped `/buff` command. It only posts a result in the configured guild and `#buff-botpricer` channel. Example: `/buff items: AK redline ft; AWP asiimov ft`. Members can optionally attach an image when Gemini is configured. The app must be installed in the guild with the `applications.commands` scope. The service verifies each Ed25519 signature and registers the guild command on startup.
+
+The live Discord Interactions Endpoint is the separate Supabase `discord-bridge` Edge Function. Its source is in `supabase/functions/discord-bridge/index.mjs`. Discord needs an answer within three seconds, while Render Free can take about a minute to wake. The bridge verifies the Discord signature, acknowledges the interaction immediately, and forwards the original signed request to Render in a background task. The bridge has `verify_jwt=false` because Discord cannot provide a Supabase JWT; Discord signature verification remains required. Configure the bridge's `DISCORD_BRIDGE_CONFIG` secret as JSON with `publicKey`, `applicationId`, `guildId`, `channelId`, and `renderUrl`. The `renderUrl` must be `https://telegram-skin-price-bot.onrender.com/discord`. Set Discord's Interactions Endpoint URL to `https://<project-ref>.supabase.co/functions/v1/discord-bridge`.
 
 Required Render environment variables for Discord:
 
