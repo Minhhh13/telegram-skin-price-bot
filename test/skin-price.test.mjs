@@ -30,6 +30,10 @@ async function mockFetch(url, options) {
 }
 
 test('parses multiple skins and explicit CNY→VND rates', () => {
+  const defaults = parseRequest('/price AK-47 | Redline (Field-Tested)').rates;
+  assert.equal(defaults.length, 27);
+  assert.equal(defaults[0], 3.5);
+  assert.equal(defaults.at(-1), 3.76);
   assert.deepEqual(parseRequest('/price AK-47 | Redline (Field-Tested); AWP | Asiimov (Field-Tested) rates 3.6, 3.65'), {
     items: ['AK-47 | Redline (Field-Tested)', 'AWP | Asiimov (Field-Tested)'], rates: [3.6, 3.65],
   });
@@ -101,5 +105,6 @@ test('webhook authenticates the Telegram header and replies in the same chat', a
   assert.equal(sent[0].reply_to_message_id, 42);
   assert.match(sent[0].text, /¥160\.99/);
 });
+
 
 
