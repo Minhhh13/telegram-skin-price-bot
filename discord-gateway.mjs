@@ -8,6 +8,10 @@ export function shouldHandleChannelMessage(message, { guildId, channelId }) {
     (String(message.content || '').trim() || message.attachments?.size));
 }
 
+export function stripBotMention(text, botId) {
+  return String(text || '').replace(new RegExp(`<@!?${String(botId || '').replace(/\D/g, '')}>`, 'g'), '').trim();
+}
+
 async function firstImage(message, fetchFn) {
   const attachment = message.attachments.find((item) =>
     item.size <= 5_000_000 && /^image\/(?:jpeg|png|webp)$/i.test(item.contentType || ''));
@@ -21,14 +25,19 @@ async function firstImage(message, fetchFn) {
 
 export async function answerChannelMessage(message, config, fetchFn = fetch) {
   if (!shouldHandleChannelMessage(message, config)) return false;
-  const text = String(message.content || '').trim();
+  const text = stripBotMention(message.content, config.applicationId);
   if (text.startsWith('/')) return false;
   try {
     await message.channel.sendTyping();
     const image = config.geminiKey ? await firstImage(message, fetchFn) : null;
     const chunks = await lookupDiscord(text, image, config.geminiKey, fetchFn);
     for (const [index, content] of chunks.entries()) {
-      const options = { content, allowedMentions: { parse: [] }, flags: MessageFlags.SuppressEmbeds };
+      const userId = message.author?.id;
+      const options = {
+        content: index === 0 && userId ? `<@${userId}>\n${content}` : content,
+        allowedMentions: userId ? { parse: [], users: [userId], repliedUser: true } : { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      };
       if (index === 0) await message.reply(options);
       else await message.channel.send(options);
     }

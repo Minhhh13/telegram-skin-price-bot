@@ -1,9 +1,9 @@
 const API = 'https://api.openskin.dev/v1';
-const DEFAULT_RATES = [3.75, 3.78];
+const DEFAULT_RATES = [3.6, 3.65, 3.7, 3.75, 3.78, 3.8];
 const MAX_ITEMS = 10;
 const MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
-export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK Redline</code>\n\nLeave out wear to see all available wears, or add FT, MW, FN, WW, or BS for one wear. Separate multiple skins with semicolons, commas, or new lines.\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. Without a rate, the bot shows 3.75 and 3.78 side by side.\n\nFor Dopplers, include a style such as Phase 2 to quote the lowest listing with that style filter. Exact float, paint seed and sticker filters are not available through this free price feed. Quotes are observed prices, not guaranteed trade prices.`;
+export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK Redline</code>\n\nLeave out wear to see all available wears, or add FT, MW, FN, WW, or BS for one wear. Separate multiple skins with semicolons, commas, or new lines.\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. By default the bot shows 3.60–3.80 in 0.05 steps, plus 3.78, two rates per row.\n\nFor Dopplers, include a style such as Phase 2 to quote the lowest listing with that style filter. Exact float, paint seed and sticker filters are not available through this free price feed. Quotes are observed prices, not guaranteed trade prices.`;
 export const floatFilterUnavailable = 'A BUFF163 float-filtered quote needs BUFF listing access. The free OpenSkin feed only has the base listing price, so I cannot verify the requested float range yet.';
 
 export function requestsFloatFilter(text) {
@@ -161,7 +161,7 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
     }, fetchFn);
     data = batch.data || {};
   }
-  const blocks = ['<b>BUFF163 base prices · CNY → VND</b>\nRate units: 1 CNY = rate × 1,000 VND'];
+  const blocks = ['<b>BUFF163 base prices · CNY → VND</b>'];
   for (const { query, variant, match } of resolved) {
     if (match.names) {
       for (const name of match.names) blocks.push(formatQuote(name, data[name], parsed.rates, now));
@@ -187,7 +187,6 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
     else if (match.ambiguous) blocks.push(`<b>${escapeHtml(query)}</b> could mean:\n${match.ambiguous.map((name) => `• ${escapeHtml(name)}`).join('\n')}${match.more ? '\n• …' : ''}\nSend the exact name.`);
     else blocks.push(`<b>${escapeHtml(query)}</b>: no matching item found. Include weapon and wear, such as <code>AK-47 | Redline (Field-Tested)</code>.`);
   }
-  blocks.push('Lowest listing only · verify float, stickers and special pattern before buying.');
   const messages = [];
   let current = '';
   for (const block of blocks) {

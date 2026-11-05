@@ -31,7 +31,7 @@ async function mockFetch(url, options) {
 
 test('parses multiple skins and explicit CNY→VND rates', () => {
   const defaults = parseRequest('/price AK-47 | Redline (Field-Tested)').rates;
-  assert.deepEqual(defaults, [3.75, 3.78]);
+  assert.deepEqual(defaults, [3.6, 3.65, 3.7, 3.75, 3.78, 3.8]);
   assert.deepEqual(parseRequest('/price AK-47 | Redline (Field-Tested); AWP | Asiimov (Field-Tested) rates 3.6, 3.65'), {
     items: ['AK-47 | Redline (Field-Tested)', 'AWP | Asiimov (Field-Tested)'], rates: [3.6, 3.65],
   });
@@ -119,7 +119,7 @@ test('natural request resolves three skins and quotes the specified Doppler phas
   assert.match(reply, /AWP \| Dragon Lore \(Factory New\)/);
   assert.match(reply, /Karambit \| Doppler \(Factory New\) · Phase 2 \(FN assumed\)/);
   assert.match(reply, /¥10,200\.00 CNY/);
-  assert.match(reply, /3\.75 → ₫38,250,000   \|   3\.78 → ₫38,556,000/);
+  assert.match(reply, /3\.78 → ₫38,556,000   \|   3\.80 → ₫38,760,000/);
   assert.equal(requests.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
 });
 
@@ -151,7 +151,7 @@ test('Gamma Doppler Phase 2 uses the filtered phase listing, including abbreviat
   assert.match(reply, /¥12,849\.50 CNY/);
   assert.match(reply, /Phase 2 lowest ask/);
   assert.doesNotMatch(reply, /Minimal Wear/);
-  assert.match(reply, /3\.75 → ₫48,185,625   \|   3\.78 → ₫48,571,110/);
+  assert.match(reply, /3\.78 → ₫48,571,110   \|   3\.80 → ₫48,828,100/);
   assert.doesNotMatch(reply, /¥8,800\.00 CNY|no matching item found/);
   assert.equal(calls.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
 });
