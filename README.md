@@ -13,13 +13,13 @@ Add the bot to a Telegram group. Members can send:
 AWP | Asiimov (Field-Tested) rates 3.6, 3.65, 3.7
 ```
 
-Members can also mention the bot and ask for a base price in ordinary language. Telegram's default bot privacy mode is sufficient for commands and mentions. If a name lacks a wear or could refer to several weapons, the bot lists matching names and requests the exact one. A price is never fabricated from a USD conversion or another marketplace. Quotes older than two hours are marked stale.
+Members can also mention or reply to the bot and ask for a base price in ordinary language or attach a JPEG/PNG screenshot under 5 MB. Telegram's default bot privacy mode remains on. When `GEMINI_API_KEY` is configured, only messages and images addressed to the bot go to Gemini 3.5 Flash-Lite's free tier for item-name recognition. Gemini never supplies prices. If a name lacks a wear or could refer to several weapons, the bot lists matching names and requests the exact one. A price is never fabricated from a USD conversion or another marketplace. Quotes older than two hours are marked stale.
 
 The default rate table includes every 0.01 from `3.50` through `3.76` (27 rates). A request may override this with 1–12 rates. Values like `3650` are accepted as equivalent to `3.65`. All conversion values are rounded to the nearest VND. The BUFF quote is the cheapest active listing observed by OpenSkin; inspect the live BUFF listing before trading special floats, stickers, phases or patterns.
 
 ## Discord
 
-The same Node service exposes `/discord` for a guild-scoped `/buff` command. It only posts a result in the configured guild and `#buff-botpricer` channel. Example: `/buff items: AK redline ft; AWP asiimov ft`. The app must be installed in the guild with the `applications.commands` scope. Configure its Interactions Endpoint URL as `https://<service>.onrender.com/discord` in the Discord Developer Portal. The service verifies each Ed25519 signature and registers the guild command on startup.
+The same Node service exposes `/discord` for a guild-scoped `/buff` command. It only posts a result in the configured guild and `#buff-botpricer` channel. Example: `/buff items: AK redline ft; AWP asiimov ft`. Members can optionally attach an image when Gemini is configured. The app must be installed in the guild with the `applications.commands` scope. Configure its Interactions Endpoint URL as `https://<service>.onrender.com/discord` in the Discord Developer Portal. The service verifies each Ed25519 signature and registers the guild command on startup.
 
 Required Render environment variables for Discord:
 
@@ -29,6 +29,7 @@ DISCORD_APPLICATION_ID=<application ID>
 DISCORD_GUILD_ID=<server ID>
 DISCORD_CHANNEL_ID=<buff-botpricer channel ID>
 DISCORD_BOT_TOKEN=<bot token for guild command registration>
+GEMINI_API_KEY=<optional Google AI Studio free-tier key for text and photo understanding>
 ```
 
 ## Hosting

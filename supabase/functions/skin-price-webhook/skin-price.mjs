@@ -105,10 +105,11 @@ function formatQuote(name, result, rates, now) {
   return lines.join('\n') + '\n';
 }
 
-export async function buildReply(input, botUsername = '', fetchFn = fetch, now = Date.now()) {
-  let parsed;
-  try { parsed = parseRequest(input, botUsername); }
-  catch (error) { return [escapeHtml(error.message) + '\n\n' + helpText]; }
+export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()) {
+  if (!Array.isArray(parsed?.items) || !parsed.items.length || parsed.items.length > MAX_ITEMS ||
+      !Array.isArray(parsed?.rates) || !parsed.rates.length || parsed.rates.some((r) => !Number.isFinite(r) || r < 2 || r > 6)) {
+    return [helpText];
+  }
   const resolved = await Promise.all(parsed.items.map(async (item) => ({ query: item, match: await resolveItem(item, fetchFn) })));
   const names = [...new Set(resolved.filter((r) => r.match.name).map((r) => r.match.name))];
   let data = {};
@@ -135,13 +136,23 @@ export async function buildReply(input, botUsername = '', fetchFn = fetch, now =
   return messages;
 }
 
+export async function buildReply(input, botUsername = '', fetchFn = fetch, now = Date.now()) {
+  let parsed;
+  try { parsed = parseRequest(input, botUsername); }
+  catch (error) { return [escapeHtml(error.message) + '\n\n' + helpText]; }
+  return buildParsedReply(parsed, fetchFn, now);
+}
+
 export function shouldReply(message, botUsername = '') {
-  const text = message?.text || '';
+  const text = message?.text || message?.caption || '';
   if (/^\/(?:price|p|find|start|help)(?:@\w+)?(?:\s|$)/i.test(text)) {
     const commandTarget = text.match(/^\/\w+@(\w+)/)?.[1];
     return !commandTarget || commandTarget.toLowerCase() === botUsername.toLowerCase();
   }
-  return Boolean(botUsername && text.toLowerCase().includes(`@${botUsername.toLowerCase()}`));
+  return Boolean(botUsername && (
+    text.toLowerCase().includes(`@${botUsername.toLowerCase()}`) ||
+    message?.reply_to_message?.from?.username?.toLowerCase() === botUsername.toLowerCase()
+  ));
 }
 
 export { DEFAULT_RATES };

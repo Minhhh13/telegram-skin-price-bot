@@ -1,0 +1,56 @@
+const GEMINI_MODEL = 'gemini-3.5-flash-lite';
+const MAX_IMAGE_BYTES = 5_000_000;
+
+function toBase64(bytes) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 16_384) binary += String.fromCharCode(...bytes.subarray(i, i + 16_384));
+  return btoa(binary);
+}
+
+export async function telegramPhoto(photo, token, fetchFn = fetch) {
+  if (!Array.isArray(photo) || !photo.length) return null;
+  const chosen = [...photo].filter((p) => p.file_size === undefined || p.file_size <= MAX_IMAGE_BYTES).at(-1);
+  if (!chosen?.file_id) throw new Error('Photo is too large. Send an image under 5 MB.');
+  const infoResponse = await fetchFn(`https://api.telegram.org/bot${token}/getFile`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ file_id: chosen.file_id }), signal: AbortSignal.timeout(9000),
+  });
+  if (!infoResponse.ok) throw new Error(`Telegram getFile HTTP ${infoResponse.status}`);
+  const info = await infoResponse.json();
+  if (!info.ok || !/^[A-Za-z0-9_./-]+$/.test(info.result?.file_path || '')) throw new Error('Telegram photo unavailable.');
+  const photoResponse = await fetchFn(`https://api.telegram.org/file/bot${token}/${info.result.file_path}`, { signal: AbortSignal.timeout(9000) });
+  if (!photoResponse.ok) throw new Error(`Telegram photo HTTP ${photoResponse.status}`);
+  const bytes = new Uint8Array(await photoResponse.arrayBuffer());
+  return imageFromBytes(bytes);
+}
+
+export function imageFromBytes(bytes) {
+  if (bytes.length > MAX_IMAGE_BYTES) throw new Error('Photo is too large. Send an image under 5 MB.');
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
+  const png = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  if (!jpeg && !png) throw new Error('Send a JPEG or PNG image.');
+  return { mimeType: jpeg ? 'image/jpeg' : 'image/png', base64: toBase64(bytes) };
+}
+
+export async function interpretItems({ text = '', image = null, apiKey, fetchFn = fetch }) {
+  if (!apiKey) return null;
+  const parts = [{ text: `Extract Counter-Strike 2 skin item names the user wants a BUFF163 base price for. Understand abbreviations and typos (for example "ak redline ft" means "AK-47 | Redline (Field-Tested)" and "dlore ft" means "AWP | Dragon Lore (Field-Tested)"). Return JSON with only an "items" array of up to 10 likely market hash names. Do not invent a wear, phase, StatTrak, Souvenir status, or item not clear from the request or image. If unclear, return an empty array. Never supply prices. User request: ${String(text).slice(0, 1800)}` }];
+  if (image) parts.push({ inline_data: { mime_type: image.mimeType, data: image.base64 } });
+  const response = await fetchFn(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+    body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0, responseMimeType: 'application/json' } }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok) throw new Error(`Gemini HTTP ${response.status}`);
+  const output = await response.json();
+  const raw = output?.candidates?.[0]?.content?.parts?.find((p) => typeof p.text === 'string')?.text;
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { throw new Error('Gemini returned invalid JSON'); }
+  if (!Array.isArray(parsed.items)) throw new Error('Gemini returned no item list');
+  return parsed.items.filter((item) => typeof item === 'string' && item.length <= 160 && item.trim()).slice(0, 10);
+}
+
+export function requestedRates(text, parseRequest) {
+  const suffix = String(text || '').match(/\b(?:rates?|at)\s*[:=]?\s*\d[\d.\s,/&a-z]*$/i)?.[0] || '';
+  return parseRequest(`/price placeholder ${suffix}`).rates;
+}

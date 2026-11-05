@@ -6,6 +6,7 @@ const handler = createHandler({
   token: process.env.TELEGRAM_SKIN_BOT_TOKEN || '',
   secret: process.env.TELEGRAM_SKIN_WEBHOOK_SECRET || '',
   botUsername: process.env.TELEGRAM_SKIN_BOT_USERNAME || '',
+  geminiKey: process.env.GEMINI_API_KEY || '',
 });
 const port = Number(process.env.PORT || 10000);
 const discordConfig = {
@@ -14,6 +15,7 @@ const discordConfig = {
   guildId: process.env.DISCORD_GUILD_ID || '',
   channelId: process.env.DISCORD_CHANNEL_ID || '',
   botToken: process.env.DISCORD_BOT_TOKEN || '',
+  geminiKey: process.env.GEMINI_API_KEY || '',
 };
 const discordHandler = createDiscordHandler(discordConfig);
 

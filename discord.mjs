@@ -1,5 +1,6 @@
 import { createPublicKey, verify } from 'node:crypto';
-import { buildReply } from './supabase/functions/skin-price-webhook/skin-price.mjs';
+import { buildParsedReply, buildReply, parseRequest } from './supabase/functions/skin-price-webhook/skin-price.mjs';
+import { imageFromBytes, interpretItems, requestedRates } from './supabase/functions/skin-price-webhook/gemini.mjs';
 
 const discordApi = 'https://discord.com/api/v10';
 
@@ -37,7 +38,7 @@ export function splitDiscord(text, max = 1900) {
   return chunks;
 }
 
-export function createDiscordHandler({ publicKey, applicationId, guildId, channelId }, fetchFn = fetch) {
+export function createDiscordHandler({ publicKey, applicationId, guildId, channelId, geminiKey = '' }, fetchFn = fetch) {
   return async (headers, body) => {
     if (!publicKey) return { status: 503, body: 'Discord not configured' };
     if (!verifyDiscord(headers, body, publicKey)) return { status: 401, body: 'Invalid signature' };
@@ -49,13 +50,28 @@ export function createDiscordHandler({ publicKey, applicationId, guildId, channe
       return { status: 200, body: JSON.stringify({ type: 4, data: { content: 'Use /buff in #buff-botpricer.', flags: 64, allowed_mentions: { parse: [] } } }) };
     }
     if (!applicationId || interaction.application_id !== applicationId) return { status: 401, body: 'Wrong application' };
-    const item = interaction.data?.options?.find((option) => option.name === 'items')?.value;
-    if (typeof item !== 'string' || !item.trim()) return { status: 200, body: JSON.stringify({ type: 4, data: { content: 'Enter one or more skin names.', flags: 64 } }) };
+    const item = interaction.data?.options?.find((option) => option.name === 'items')?.value || '';
+    const imageId = interaction.data?.options?.find((option) => option.name === 'image')?.value;
+    const attachment = imageId && interaction.data?.resolved?.attachments?.[imageId];
+    if (!item.trim() && !attachment) return { status: 200, body: JSON.stringify({ type: 4, data: { content: 'Enter skin names or attach a photo.', flags: 64 } }) };
     const token = interaction.token;
     void (async () => {
       let messages;
       try {
-        const html = await buildReply(item, '', fetchFn);
+        let image = null;
+        if (attachment && geminiKey) {
+          const url = new URL(attachment.url);
+          if (url.protocol !== 'https:' || !['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname) || attachment.size > 5_000_000) throw new Error('Invalid Discord image');
+          const response = await fetchFn(url, { signal: AbortSignal.timeout(9000) });
+          if (!response.ok) throw new Error(`Discord image HTTP ${response.status}`);
+          image = imageFromBytes(new Uint8Array(await response.arrayBuffer()));
+        }
+        const aiItems = geminiKey ? await interpretItems({ text: item, image, apiKey: geminiKey, fetchFn }) : null;
+        const html = aiItems ? (aiItems.length
+          ? await buildParsedReply({ items: aiItems, rates: requestedRates(item, parseRequest) }, fetchFn)
+          : ['I could not identify the exact skin and wear. Please provide a clearer name or photo.'])
+          : attachment ? ['Photo recognition is not configured yet. Please type the skin names.']
+          : await buildReply(item, '', fetchFn);
         messages = splitDiscord(html.map(discordText).join('\n\n'));
       } catch (error) {
         console.error('Discord lookup failed:', error instanceof Error ? error.message : String(error));
@@ -76,7 +92,10 @@ export async function registerDiscordCommand({ applicationId, guildId, botToken 
   const response = await fetchFn(`${discordApi}/applications/${applicationId}/guilds/${guildId}/commands`, {
     method: 'POST', headers: { authorization: `Bot ${botToken}`, 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'buff', description: 'Get BUFF163 base prices and CNY to VND rates', type: 1,
-      options: [{ name: 'items', description: 'Skin names, separated by semicolons (up to 10)', type: 3, required: true }] }),
+      options: [
+        { name: 'items', description: 'Skin names or a natural language request (up to 10)', type: 3, required: false },
+        { name: 'image', description: 'Optional screenshot of CS2 skins', type: 11, required: false },
+      ] }),
     signal: AbortSignal.timeout(9000),
   });
   if (!response.ok) throw new Error(`Discord command registration HTTP ${response.status}`);

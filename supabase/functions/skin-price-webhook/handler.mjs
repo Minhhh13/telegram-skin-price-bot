@@ -1,6 +1,7 @@
-import { buildReply, helpText, shouldReply } from './skin-price.mjs';
+import { buildParsedReply, buildReply, helpText, parseRequest, shouldReply } from './skin-price.mjs';
+import { interpretItems, requestedRates, telegramPhoto } from './gemini.mjs';
 
-export function createHandler({ token, secret, botUsername }, fetchFn = fetch) {
+export function createHandler({ token, secret, botUsername, geminiKey = '' }, fetchFn = fetch) {
   async function telegramSend(message, html) {
     const response = await fetchFn(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
@@ -31,9 +32,23 @@ export function createHandler({ token, secret, botUsername }, fetchFn = fetch) {
     const message = update?.message;
     if (!shouldReply(message, botUsername)) return new Response('ok');
     try {
-      const text = message.text || '';
-      const replies = /^\/(?:start|help)(?:@\w+)?(?:\s|$)/i.test(text)
-        ? [helpText] : await buildReply(text, botUsername, fetchFn);
+      const text = message.text || message.caption || '';
+      let replies;
+      if (/^\/(?:start|help)(?:@\w+)?(?:\s|$)/i.test(text)) replies = [helpText];
+      else if (geminiKey) {
+        try {
+          const image = await telegramPhoto(message.photo, token, fetchFn);
+          const items = await interpretItems({ text, image, apiKey: geminiKey, fetchFn });
+          replies = items.length
+            ? await buildParsedReply({ items, rates: requestedRates(text, parseRequest) }, fetchFn)
+            : ['I could not identify the exact skin and wear. Please include the weapon, skin name, and wear, or send a clearer photo.'];
+        } catch (error) {
+          console.error('AI item recognition unavailable:', error instanceof Error ? error.message : String(error));
+          replies = message.photo ? ['Photo recognition is temporarily unavailable. Please type the skin names.']
+            : await buildReply(text, botUsername, fetchFn);
+        }
+      } else if (message.photo) replies = ['Photo recognition is not configured yet. Please type the skin names.'];
+      else replies = await buildReply(text, botUsername, fetchFn);
       for (const reply of replies) await telegramSend(message, reply);
       return new Response('ok');
     } catch (error) {
