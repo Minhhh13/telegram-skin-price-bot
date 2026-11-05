@@ -15,7 +15,7 @@ AWP | Asiimov (Field-Tested) rates 3.6, 3.65, 3.7
 
 Members can also mention the bot and ask for a base price in ordinary language. Telegram's default bot privacy mode is sufficient for commands and mentions. If a name lacks a wear or could refer to several weapons, the bot lists matching names and requests the exact one. A price is never fabricated from a USD conversion or another marketplace. Quotes older than two hours are marked stale.
 
-The default rate table is `3.50, 3.60, 3.65, 3.70–3.76`. A request may override this with 1–12 rates. Values like `3650` are accepted as equivalent to `3.65`. All conversion values are rounded to the nearest VND. The BUFF quote is the cheapest active listing observed by OpenSkin; inspect the live BUFF listing before trading special floats, stickers, phases or patterns.
+The default rate table includes every 0.01 from `3.50` through `3.76` (27 rates). A request may override this with 1–12 rates. Values like `3650` are accepted as equivalent to `3.65`. All conversion values are rounded to the nearest VND. The BUFF quote is the cheapest active listing observed by OpenSkin; inspect the live BUFF listing before trading special floats, stickers, phases or patterns.
 
 ## Hosting
 
@@ -44,4 +44,5 @@ Set the webhook with a **POST** to Telegram's `setWebhook` Bot API method. Body:
 ```
 
 Keep the bot token out of source, chat messages, and screenshots. Run `npm test` locally. Check `getWebhookInfo` for delivery errors after connecting the bot.
+
 
