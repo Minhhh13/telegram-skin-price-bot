@@ -1,6 +1,6 @@
-# Telegram BUFF163 skin price bot
+# BUFF163 skin price bot for Telegram and Discord
 
-Standalone on-demand Telegram lookup for up to 10 CS2 items per request. It uses the [OpenSkin free Pricing API](https://openskin.dev/) to search exact item names and obtain BUFF163's original CNY lowest ask. No OpenSkin account, paid model or scrape session is required. A CNY→VND rate of `3.65` means **3,650 VND per CNY**. The bot uses no Trade Desk data or code.
+Standalone on-demand lookup for up to 10 CS2 items per request. It uses the [OpenSkin free Pricing API](https://openskin.dev/) to search exact item names and obtain BUFF163's original CNY lowest ask. No OpenSkin account, paid model or scrape session is required. A CNY→VND rate of `3.65` means **3,650 VND per CNY**. The bot uses no Trade Desk data or code.
 
 ## Group use
 
@@ -17,13 +17,27 @@ Members can also mention the bot and ask for a base price in ordinary language. 
 
 The default rate table includes every 0.01 from `3.50` through `3.76` (27 rates). A request may override this with 1–12 rates. Values like `3650` are accepted as equivalent to `3.65`. All conversion values are rounded to the nearest VND. The BUFF quote is the cheapest active listing observed by OpenSkin; inspect the live BUFF listing before trading special floats, stickers, phases or patterns.
 
+## Discord
+
+The same Node service exposes `/discord` for a guild-scoped `/buff` command. It only posts a result in the configured guild and `#buff-botpricer` channel. Example: `/buff items: AK redline ft; AWP asiimov ft`. The app must be installed in the guild with the `applications.commands` scope. Configure its Interactions Endpoint URL as `https://<service>.onrender.com/discord` in the Discord Developer Portal. The service verifies each Ed25519 signature and registers the guild command on startup.
+
+Required Render environment variables for Discord:
+
+```text
+DISCORD_PUBLIC_KEY=<application public key>
+DISCORD_APPLICATION_ID=<application ID>
+DISCORD_GUILD_ID=<server ID>
+DISCORD_CHANNEL_ID=<buff-botpricer channel ID>
+DISCORD_BOT_TOKEN=<bot token for guild command registration>
+```
+
 ## Hosting
 
 The repository supports either a separate Render web service or a separate Supabase Edge Function. Only one host should own the Telegram webhook. Neither option needs a database, an OpenSkin key, or an AI subscription.
 
 ### Render
 
-Create a **separate** Node web service from this repository with build command `npm ci` (or `npm install` if no lockfile), start command `npm start`, and health check `/health`. Put the three secrets below in the service environment. Set the Telegram webhook URL to `https://<service>.onrender.com/telegram` with the same `secret_token`. The Render Free plan spins down after 15 minutes of inactivity, so an occasional first response can be delayed by roughly a minute; the service is otherwise event driven.
+Create a **separate** Node web service from this repository with build command `npm ci` (or `npm install` if no lockfile), start command `npm start`, and health check `/health`. Put the three Telegram secrets below in the service environment, plus `TELEGRAM_SKIN_WEBHOOK_URL=https://<service>.onrender.com/telegram`. The service registers its Telegram webhook on startup with the same secret token. The Render Free plan spins down after 15 minutes of inactivity, so an occasional first response can be delayed by roughly a minute; the service is otherwise event driven.
 
 ### Supabase Edge Function
 
