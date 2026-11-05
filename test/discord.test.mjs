@@ -35,3 +35,29 @@ test('Discord prices retain formatting and fit message limits', () => {
   assert.ok(chunks.length > 1);
   assert.ok(chunks.every((chunk) => chunk.length <= 100));
 });
+
+test('Gemini 503 falls back to OpenSkin text lookup and completes the Discord reply', async () => {
+  let complete;
+  const posted = new Promise((resolve) => { complete = resolve; });
+  const fetchFn = async (url, options) => {
+    if (url.includes('generativelanguage.googleapis.com')) return { ok: false, status: 503 };
+    if (url.includes('/items?')) return { ok: true, json: async () => ({ data: [
+      { name: 'AK-47 | Redline (Field-Tested)' },
+      { name: 'AK-47 | Redline (Minimal Wear)' },
+    ] }) };
+    if (url.endsWith('/prices/batch')) return { ok: true, json: async () => ({ data: Object.fromEntries(JSON.parse(options.body).items.map((name) => [name, {
+      buff: { native_currency: { code: 'CNY', ask: 160 }, updated_at: new Date().toISOString() },
+    }])) }) };
+    if (url.includes('discord.com/api/v10/webhooks/')) {
+      complete(JSON.parse(options.body).content);
+      return { ok: true };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const handler = createDiscordHandler({ publicKey: publicHex, applicationId: 'app', guildId: 'guild', channelId: 'channel', geminiKey: 'fake-key' }, fetchFn);
+  const { headers, body } = signed({ type: 2, application_id: 'app', guild_id: 'guild', channel_id: 'channel', token: 'test-token', data: { name: 'buff', options: [{ name: 'items', value: 'AK Redline' }] } });
+  assert.equal(JSON.parse((await handler(headers, body)).body).type, 5);
+  const text = await posted;
+  assert.match(text, /Redline \(Minimal Wear\)/);
+  assert.match(text, /Redline \(Field-Tested\)/);
+});

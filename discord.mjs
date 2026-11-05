@@ -66,7 +66,11 @@ export function createDiscordHandler({ publicKey, applicationId, guildId, channe
           if (!response.ok) throw new Error(`Discord image HTTP ${response.status}`);
           image = imageFromBytes(new Uint8Array(await response.arrayBuffer()));
         }
-        const aiItems = geminiKey && !requestsFloatFilter(item) ? await interpretItems({ text: item, image, apiKey: geminiKey, fetchFn }) : null;
+        let aiItems = null;
+        if (geminiKey && !requestsFloatFilter(item)) {
+          try { aiItems = await interpretItems({ text: item, image, apiKey: geminiKey, fetchFn }); }
+          catch (error) { console.warn('Discord AI item recognition unavailable:', error instanceof Error ? error.message : String(error)); }
+        }
         const html = requestsFloatFilter(item) ? [floatFilterUnavailable] : aiItems ? (aiItems.length
           ? await buildParsedReply({ items: aiItems, rates: requestedRates(item, parseRequest) }, fetchFn)
           : ['I could not identify the exact skin and wear. Please provide a clearer name or photo.'])
