@@ -20,6 +20,7 @@ export function parseRequest(input, botUsername = '') {
   text = text.replace(/^\/(?:price|p|find|start|help)(?:@\w+)?\b/i, '').trim();
   text = text.replace(/^(?:please\s+)?(?:find|check|show|look up|what(?:'s| is))\s+(?:me\s+)?(?:the\s+)?(?:current\s+)?(?:buff163?\s+)?(?:base\s+)?(?:price\s+)?(?:for|of)?\s*/i, '');
   text = text.replace(/^(?:these\s+)?items?\s*:?\s*/i, '');
+  text = text.replace(/[.?!]+$/, '').trim();
 
   const rateMatch = text.match(/\b(rates?|at|@)\s*[:=]?\s*((?:\d+(?:\.\d+)?\s*(?:,|\/|&|\band\b)?\s*)+)$/i);
   let rates = DEFAULT_RATES;
@@ -144,4 +145,5 @@ export function shouldReply(message, botUsername = '') {
 }
 
 export { DEFAULT_RATES };
+
 
