@@ -77,6 +77,8 @@ export function startMessengerListener(config, ClientClass = MessengerClient) {
   let stopped = false;
   let retryTimer = null;
   let lastConnectedAt = 0;
+  const startedAt = Date.now();
+  const seenMessages = new Set();
 
   const connect = async () => {
     if (connecting || stopped || client?.isConnected()) return;
@@ -86,6 +88,20 @@ export function startMessengerListener(config, ClientClass = MessengerClient) {
       const active = new ClientClass({ platform: Platform.Messenger, cookies: cookies.getAll(), enableE2EE: false });
       client = active;
       active.on('message', (event) => {
+        if (String(event.threadId) === String(config.threadId)) {
+          console.log('Messenger group event received', {
+            ownMessage: String(event.senderId) === String(active.getUserId()),
+            textLength: String(event.text || '').length,
+            attachmentCount: event.attachments?.length || 0,
+          });
+        }
+        const timestamp = event.timestamp instanceof Date ? event.timestamp.getTime() : Number(event.timestamp);
+        if (Number.isFinite(timestamp) && timestamp < startedAt - 5_000) return;
+        if (event.messageId && seenMessages.has(event.messageId)) return;
+        if (event.messageId) {
+          seenMessages.add(event.messageId);
+          if (seenMessages.size > 500) seenMessages.delete(seenMessages.values().next().value);
+        }
         void answerMessengerMessage(active, event, config).catch((error) =>
           console.error('Messenger reply failed:', error instanceof Error ? error.message : String(error)));
       });
@@ -95,6 +111,7 @@ export function startMessengerListener(config, ClientClass = MessengerClient) {
       await active.connect();
       lastConnectedAt = Date.now();
       console.log('Messenger listener connected to configured account');
+      await active.getMessages(config.threadId);
     } catch (error) {
       console.error('Messenger listener connection failed:', error instanceof Error ? error.message : String(error));
       try { client?.disconnect(); } catch { /* A failed handshake may not have a socket yet. */ }
