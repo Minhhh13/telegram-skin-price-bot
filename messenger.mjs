@@ -3,8 +3,8 @@ import { lookupDiscord } from './discord.mjs';
 import { imageFromBytes } from './supabase/functions/skin-price-webhook/gemini.mjs';
 
 const MAX_IMAGE_BYTES = 5_000_000;
-const RETRY_MS = 30_000;
-const SNAPSHOT_REFRESH_MS = 60_000;
+const RETRY_MS = 15_000;
+const SNAPSHOT_REFRESH_MS = 30_000;
 
 export function parseMessengerRequest(event, accountId, threadId) {
   if (!threadId || String(event?.threadId) !== String(threadId) ||
@@ -79,26 +79,22 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
   let cookies = null;
   const startedAt = Date.now();
   const seenMessages = new Set();
-  let diagnosticEvents = 0;
   let diagnosticRawEvents = 0;
 
   const handleIncoming = (incoming, source) => {
     const event = { ...incoming, messageId: incoming.id, timestamp: Number(incoming.timestampMs) };
     const targetGroup = String(event.threadId) === String(config.threadId);
-    if (targetGroup || diagnosticEvents++ < 5) {
-      console.log('Messenger message event', {
-        source, targetGroup,
-        ownMessage: String(event.senderId) === String(accountId),
-        ageSeconds: Number.isFinite(event.timestamp) ? Math.round((Date.now() - event.timestamp) / 1000) : null,
-        textLength: String(event.text || '').length,
-      });
-    }
     if (!targetGroup || !Number.isFinite(event.timestamp) || event.timestamp < startedAt - 5_000) return;
+    if (!parseMessengerRequest(event, accountId, config.threadId)) return;
     if (event.messageId && seenMessages.has(event.messageId)) return;
     if (event.messageId) {
       seenMessages.add(event.messageId);
       if (seenMessages.size > 500) seenMessages.delete(seenMessages.values().next().value);
     }
+    console.log('Messenger request received', {
+      source, ageSeconds: Math.round((Date.now() - event.timestamp) / 1000),
+      textLength: String(event.text || '').length,
+    });
     const active = client;
     const bridge = {
       getUserId: () => accountId,

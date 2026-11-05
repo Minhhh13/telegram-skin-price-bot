@@ -188,6 +188,31 @@ test('Gamma Doppler Phase 2 uses the filtered phase listing, including abbreviat
   assert.equal(calls.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
 });
 
+test('butter gamma p1 fn resolves Butterfly Knife Gamma Doppler Phase 1', async () => {
+  const item = '★ Butterfly Knife | Gamma Doppler (Factory New)';
+  const fetchFn = async (url, options) => {
+    if (url.endsWith('/prices/batch')) {
+      assert.deepEqual(JSON.parse(options.body).items, [item]);
+      return { ok: true, json: async () => ({ data: { [item]: {
+        buff: { native_currency: { code: 'CNY', ask: 9000 }, updated_at: observed },
+      } } }) };
+    }
+    if (url.includes('/prices/buff/phases?')) {
+      assert.equal(new URL(url).searchParams.get('item'), item);
+      return { ok: true, json: async () => ({ patterns: [
+        { pattern: 'Phase 1', native_currency: { code: 'CNY', ask: 12000 }, updated_at: observed },
+      ] }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  for (const query of ['butter gamma p1 fn', 'butter gamma phase 1 fn', 'btf gamma p1 fn']) {
+    const reply = (await buildReply(query, '', fetchFn, Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+    assert.match(reply, /Butterfly Knife \| Gamma Doppler \(Factory New\) · Phase 1/, query);
+    assert.match(reply, /¥12,000\.00 CNY/, query);
+    assert.doesNotMatch(reply, /¥9,000\.00 CNY|no matching item found/, query);
+  }
+});
+
 test('M9 gemstone names resolve to the correct BUFF Doppler style filters', async () => {
   const doppler = '★ M9 Bayonet | Doppler (Factory New)';
   const gamma = '★ M9 Bayonet | Gamma Doppler (Factory New)';

@@ -48,6 +48,7 @@ export function parseRequest(input, botUsername = '') {
 const alias = new Map([
   ['ak', 'ak47'], ['ak47', 'ak47'], ['m4', 'm4a4'], ['m4a1s', 'm4a1s'], ['m4a4', 'm4a4'], ['m9', 'm9bayonet'],
   ['deagle', 'deserteagle'], ['glock', 'glock18'], ['usp', 'usps'], ['glove', 'gloves'],
+  ['butter', 'butterflyknife'], ['btf', 'butterflyknife'],
   ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['ouvenir', 'souvenir'], ['dlore', 'dragonlore'],
   ['fn', 'factorynew'], ['mw', 'minimalwear'], ['ft', 'fieldtested'],
   ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'],
@@ -161,9 +162,9 @@ function formatRate(rate) {
 }
 
 function extractPattern(query) {
-  const match = String(query).match(/\b(phase\s*[1-4]|black\s*pearl|ruby|sapphire|emerald)\b/i);
+  const match = String(query).match(/\b(phase\s*[1-4]|p[1-4]|black\s*pearl|ruby|sapphire|emerald)\b/i);
   if (!match) return { lookup: query, pattern: '' };
-  const pattern = /^phase/i.test(match[1]) ? `Phase ${match[1].match(/[1-4]/)[0]}`
+  const pattern = /^(?:phase|p[1-4]$)/i.test(match[1]) ? `Phase ${match[1].match(/[1-4]/)[0]}`
     : /^black/i.test(match[1]) ? 'Black Pearl'
     : match[1][0].toUpperCase() + match[1].slice(1).toLowerCase();
   let lookup = String(query).slice(0, match.index) + String(query).slice(match.index + match[0].length);
@@ -172,6 +173,8 @@ function extractPattern(query) {
   const gemstone = ['Ruby', 'Sapphire', 'Black Pearl', 'Emerald'].includes(pattern);
   if (gemstone && /\b(?:m9|m9\s*bayonet)\b/i.test(lookup) && !/\bdop(?:pler)?\b/i.test(lookup)) {
     lookup += pattern === 'Emerald' ? ' Gamma Doppler' : ' Doppler';
+  } else if (/^Phase [1-4]$/.test(pattern) && /\bgamma\b/i.test(lookup) && !/\bdop(?:pler)?\b/i.test(lookup)) {
+    lookup += ' Doppler';
   } else if (pattern === 'Emerald' && /\bgamma\b/i.test(lookup) && !/\bdop(?:pler)?\b/i.test(lookup)) {
     lookup += ' Doppler';
   }
