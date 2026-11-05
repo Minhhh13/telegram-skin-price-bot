@@ -36,6 +36,9 @@ test('parses multiple skins and explicit CNY→VND rates', () => {
   assert.deepEqual(parseRequest('@SkinBot find me the base price for AK redline ft rate 3650', 'SkinBot'), {
     items: ['AK redline ft'], rates: [3.65],
   });
+  assert.deepEqual(parseRequest('@SkinBot find me the base price for AK redline ft and AWP asiimov ft at 3.7.', 'SkinBot'), {
+    items: ['AK redline ft', 'AWP asiimov ft'], rates: [3.7],
+  });
   assert.throws(() => parseRequest('/price AK redline ft rate 100'), /Rates must/);
 });
 
@@ -98,4 +101,5 @@ test('webhook authenticates the Telegram header and replies in the same chat', a
   assert.equal(sent[0].reply_to_message_id, 42);
   assert.match(sent[0].text, /¥160\.99/);
 });
+
 
