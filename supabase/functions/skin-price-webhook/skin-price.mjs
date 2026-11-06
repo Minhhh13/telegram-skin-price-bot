@@ -78,7 +78,7 @@ function entryFor(name) {
   const tokens = normalizedTokens(name);
   const finishTokens = normalizedTokens((right || name).replace(/\([^)]*\)/g, '')).filter((token) => !special.has(token));
   return { name, tokens, weapon: right ? normalizedTokens(left).filter((token) => !special.has(token)).join('') : '',
-    finish: finishTokens.join(''), finishNoArticle: finishTokens.filter((token) => token !== 'the').join(''),
+    finish: finishTokens.join(''), finishNoArticle: finishTokens.filter((token) => token !== 'the').join(''), finishTokens,
     wear: tokens.find((token) => wears.has(token)) || '', souvenir: tokens.includes('souvenir'), stattrak: tokens.includes('stattrak') };
 }
 const catalog = itemNames.map(entryFor);
@@ -156,8 +156,9 @@ function resolveFromCatalog(query, entries) {
     const error = Math.min(...[...new Set([entry.finish, entry.finishNoArticle])].map((finish) =>
       finish === finishKey ? 0
         : finishKey.length >= 4 && finish.startsWith(finishKey) ? 0.5
-        : distance(finishKey, finish, maxError)));
-    if (error <= maxError || error === 0.5) ranked.push({ entry, error });
+        : distance(finishKey, finish, maxError)),
+      weapon && finishKey.length >= 4 && entry.finishTokens.includes(finishKey) ? 0.25 : Infinity);
+    if (error <= maxError || error === 0.5 || error === 0.25) ranked.push({ entry, error });
   }
   if (!ranked.length) return { missing: true };
   const best = Math.min(...ranked.map((r) => r.error));
@@ -172,10 +173,32 @@ function resolveFromCatalog(query, entries) {
 }
 
 export function aiItemSupportedByText(source, item) {
-  const finish = normalizedTokens(item.split('|')[1]?.replace(/\([^)]*\)/g, '') || '').filter((token) => token !== 'the').join('');
-  const sourceKey = normalizedTokens(source).filter((token) => token !== 'the').join('');
+  const sourceTokens = normalizedTokens(source);
+  const candidate = entryFor(item);
+  const sourceWears = [...new Set(sourceTokens.filter((token) => wears.has(token)))];
+  const singleItem = (() => {
+    try { return parseRequest(source).items.length === 1; } catch { return false; }
+  })();
+  if (singleItem ? (sourceWears[0] || '') !== candidate.wear
+    : candidate.wear && !sourceWears.includes(candidate.wear)) return false;
+  if ((!sourceTokens.includes('stattrak') && candidate.stattrak) ||
+      (!sourceTokens.includes('souvenir') && candidate.souvenir)) return false;
+  if (singleItem && (sourceTokens.includes('stattrak') !== candidate.stattrak ||
+      sourceTokens.includes('souvenir') !== candidate.souvenir)) return false;
+  const sourceWeapons = sourceTokens.filter((token) => weapons.has(token));
+  if (sourceWeapons.length && candidate.weapon && !sourceWeapons.includes(candidate.weapon)) return false;
+  const finish = candidate.finishNoArticle;
+  const sourceKey = sourceTokens.filter((token) => token !== 'the').join('');
   if (!finish || !sourceKey) return false;
   if (sourceKey.includes(finish)) return true;
+  const exactFinishWord = candidate.finishTokens.find((token) => token.length >= 4 &&
+    token !== 'the' && sourceTokens.includes(token));
+  if (candidate.weapon && sourceWeapons.includes(candidate.weapon) && exactFinishWord) {
+    const finishes = new Set(catalog.filter((entry) => entry.weapon === candidate.weapon &&
+      entry.souvenir === candidate.souvenir && entry.stattrak === candidate.stattrak &&
+      entry.finishTokens.includes(exactFinishWord)).map((entry) => entry.finish));
+    if (finishes.size === 1 && finishes.has(candidate.finish)) return true;
+  }
   for (let start = 0; start < sourceKey.length; start++) {
     for (let length = Math.max(3, finish.length - 2); length <= Math.min(finish.length + 2, sourceKey.length - start); length++) {
       if (distance(sourceKey.slice(start, start + length), finish, 2) <= 2) return true;

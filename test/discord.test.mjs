@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { createDiscordHandler, discordText, splitDiscord } from '../discord.mjs';
+import { createDiscordHandler, discordText, lookupDiscord, splitDiscord } from '../discord.mjs';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const publicHex = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
@@ -34,6 +34,59 @@ test('Discord prices retain formatting and fit message limits', () => {
   const chunks = splitDiscord(Array.from({ length: 30 }, () => '3.65 → 587,614 VND').join('\n'), 100);
   assert.ok(chunks.length > 1);
   assert.ok(chunks.every((chunk) => chunk.length <= 100));
+});
+
+test('a clear catalog match returns a price without spending a Gemini request', async () => {
+  let geminiCalls = 0;
+  let priceCalls = 0;
+  const fetchFn = async (url, options) => {
+    if (url.includes('generativelanguage.googleapis.com')) {
+      geminiCalls++;
+      throw new Error('A clear match should not call Gemini');
+    }
+    if (url.endsWith('/prices/batch')) {
+      priceCalls++;
+      assert.deepEqual(JSON.parse(options.body).items, ['AK-47 | Redline (Field-Tested)']);
+      return { ok: true, json: async () => ({ data: {
+        'AK-47 | Redline (Field-Tested)': {
+          buff: { native_currency: { code: 'CNY', ask: 160 }, updated_at: new Date().toISOString() },
+        },
+      } }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const reply = (await lookupDiscord('AK redline ft', null, 'fake-key', fetchFn,
+    '@Thang Manh Nguyen AK redline ft')).join('\n');
+  assert.equal(geminiCalls, 0);
+  assert.equal(priceCalls, 1);
+  assert.match(reply, /AK-47 \| Redline \(Field-Tested\)/);
+  assert.match(reply, /¥160\.00 CNY/);
+});
+
+test('a photo reaches Gemini with the original message and image', async () => {
+  let prompt = '';
+  let imageData;
+  const fetchFn = async (url, options) => {
+    if (url.includes('generativelanguage.googleapis.com')) {
+      const parts = JSON.parse(options.body).contents[0].parts;
+      prompt = parts[0].text;
+      imageData = parts[1].inline_data;
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [
+        { text: '{"items":["AK-47 | Redline (Field-Tested)"]}' },
+      ] } }] }) };
+    }
+    if (url.endsWith('/prices/batch')) return { ok: true, json: async () => ({ data: {
+      'AK-47 | Redline (Field-Tested)': {
+        buff: { native_currency: { code: 'CNY', ask: 160 }, updated_at: new Date().toISOString() },
+      },
+    } }) };
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const reply = (await lookupDiscord('', { mimeType: 'image/png', base64: 'photo-data' }, 'fake-key', fetchFn,
+    '@BUFF163 Price Checker please price the attached skin')).join('\n');
+  assert.match(prompt, /Full user message: @BUFF163 Price Checker please price the attached skin/);
+  assert.deepEqual(imageData, { mime_type: 'image/png', data: 'photo-data' });
+  assert.match(reply, /AK-47 \| Redline \(Field-Tested\)/);
 });
 
 test('Gemini 503 falls back to OpenSkin text lookup and completes the Discord reply', async () => {

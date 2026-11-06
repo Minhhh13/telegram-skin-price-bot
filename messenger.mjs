@@ -28,7 +28,7 @@ export function messengerText(markdown) {
     const heading = line.match(/^\*\*(.+)\*\*$/);
     if (heading) return `◆ ${heading[1]}`;
     const quote = line.match(/^\*\*(¥[\d,.]+ CNY)\*\* · BUFF163 (.+?) · \[BUFF (?:listing|item \(select [^)]+\))\]\(https:\/\/buff\.163\.com\/goods\/(\d+)\)$/);
-    if (quote) return `💴 ${quote[1]} · BUFF ${quote[2]}\n   Item #${quote[3]}`;
+    if (quote) return `💴 ${quote[1]} · BUFF ${quote[2]}\n🔗 https://buff.163.com/goods/${quote[3]}`;
     if (/^`[\d.]+ → ₫/.test(line)) return line.replace(/^`|`$/g, '').split(/\s+\|\s+/).map((rate) => `   ${rate.trim()}`).join('\n');
     const snapshot = line.match(/^Feed snapshot (\S+) (\S+) UTC \(([^)]+)\)(?: ⚠️ .*)?$/);
     if (snapshot) return `🕒 Feed ${snapshot[3]} · ${snapshot[2]} UTC${line.includes('⚠️') ? '\n⚠️ May miss newer listings' : ''}`;
@@ -89,20 +89,21 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
   let lastConnectedAt = 0;
   let accountId = '';
   let cookies = null;
-  const startedAt = Date.now();
-  const seenMessages = new Set();
+  const startedAt = Number.isFinite(config.startedAt) ? config.startedAt : Date.now();
+  const seenMessages = new Set((config.recentMessageIds || []).map(String));
+  const inFlight = new Set();
+  const pendingReplies = new Set();
   let diagnosticRawEvents = 0;
+  let liveReadyLogged = false;
 
   const handleIncoming = (incoming, source) => {
     const event = { ...incoming, messageId: incoming.id, timestamp: Number(incoming.timestampMs) };
     const targetGroup = String(event.threadId) === String(config.threadId);
     if (!targetGroup || !Number.isFinite(event.timestamp) || event.timestamp < startedAt - 5_000) return;
     if (!parseMessengerRequest(event, accountId, config.threadId)) return;
-    if (event.messageId && seenMessages.has(event.messageId)) return;
-    if (event.messageId) {
-      seenMessages.add(event.messageId);
-      if (seenMessages.size > 500) seenMessages.delete(seenMessages.values().next().value);
-    }
+    const messageId = event.messageId ? String(event.messageId) : '';
+    if (messageId && (seenMessages.has(messageId) || inFlight.has(messageId))) return;
+    if (messageId) inFlight.add(messageId);
     console.log('Messenger request received', {
       source, ageSeconds: Math.round((Date.now() - event.timestamp) / 1000),
       textLength: String(event.text || '').length,
@@ -112,12 +113,21 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
       getUserId: () => accountId,
       sendMessage: (threadId, text, options) => active.sendMessage(BigInt(threadId), { text, replyToId: options?.replyToMessageId }),
     };
-    void answerMessengerMessage(bridge, event, config).catch((error) =>
-      console.error('Messenger reply failed:', error instanceof Error ? error.message : String(error)));
+    const task = answerMessengerMessage(bridge, event, config).then((handled) => {
+      if (handled && messageId) {
+        seenMessages.add(messageId);
+        if (seenMessages.size > 500) seenMessages.delete(seenMessages.values().next().value);
+        try { config.onMessageHandled?.(messageId); }
+        catch (error) { console.error('Messenger dedup sync failed:', error instanceof Error ? error.message : String(error)); }
+      }
+    }).catch((error) =>
+      console.error('Messenger reply failed:', error instanceof Error ? error.message : String(error)))
+      .finally(() => { if (messageId) inFlight.delete(messageId); pendingReplies.delete(task); });
+    pendingReplies.add(task);
   };
 
   const connect = async (refresh = false) => {
-    if (connecting || stopped || (client?.isConnected && !refresh)) return;
+    if (connecting || stopped || pendingReplies.size || (client?.isConnected && !refresh)) return;
     connecting = true;
     try {
       if (!cookies) cookies = Utils.parseCookies(config.cookies);
@@ -132,10 +142,17 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
       active.on('raw', (event) => {
         if (diagnosticRawEvents++ < 12) console.log('Messenger raw event type', event.from, event.type);
       });
+      active.once('fullyReady', () => {
+        if (!liveReadyLogged) {
+          liveReadyLogged = true;
+          console.log('Messenger live event stream fully ready');
+        }
+      });
       active.on('message', (incoming) => handleIncoming(incoming, 'live'));
       active.on('error', (error) => console.error('Messenger connection error:', error?.message || String(error)));
       active.on('disconnected', () => console.warn('Messenger listener disconnected'));
       const { user, initialData } = await active.connect();
+      if (stopped) { await active.disconnect(); return; }
       accountId = user.id;
       lastConnectedAt = Date.now();
       for (const message of [...initialData.messages]
@@ -161,6 +178,11 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
   }, intervals.retryMs ?? RETRY_MS);
   return {
     status: () => ({ connected: Boolean(client?.isConnected), lastConnectedAt }),
-    stop: () => { stopped = true; clearInterval(retryTimer); void client?.disconnect(); },
+    stop: async () => {
+      stopped = true;
+      clearInterval(retryTimer);
+      await Promise.allSettled([...pendingReplies]);
+      await client?.disconnect().catch(() => {});
+    },
   };
 }

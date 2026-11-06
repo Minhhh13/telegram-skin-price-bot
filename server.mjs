@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { createHandler } from './supabase/functions/skin-price-webhook/handler.mjs';
 import { createDiscordHandler, registerDiscordCommand } from './discord.mjs';
 import { startDiscordGateway } from './discord-gateway.mjs';
-import { startMessengerListener } from './messenger.mjs';
+import { startMessengerSupervisor } from './messenger-supervisor.mjs';
 
 const handler = createHandler({
   token: process.env.TELEGRAM_SKIN_BOT_TOKEN || '',
@@ -50,7 +50,7 @@ async function connectIntegrations() {
   } catch (error) { console.error('Discord command setup failed:', error instanceof Error ? error.message : String(error)); }
   try { discordClient = await startDiscordGateway(discordConfig); }
   catch (error) { console.error('Discord channel listener setup failed:', error instanceof Error ? error.message : String(error)); }
-  messengerListener = startMessengerListener(messengerConfig);
+  messengerListener = startMessengerSupervisor(messengerConfig);
 }
 
 const server = createServer(async (req, res) => {
@@ -94,11 +94,20 @@ const server = createServer(async (req, res) => {
   void connectIntegrations();
 });
 
-process.on('SIGTERM', () => {
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log('Shutting down chat listeners');
   discordClient?.destroy();
-  messengerListener?.stop();
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 5000).unref();
-});
+  const timeout = setTimeout(() => process.exit(1), 15_000);
+  timeout.unref();
+  const httpClosed = new Promise((resolve) => server.close(resolve));
+  await Promise.allSettled([httpClosed, messengerListener?.stop()]);
+  clearTimeout(timeout);
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => { void shutdown(); });
+process.on('SIGINT', () => { void shutdown(); });
 

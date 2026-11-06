@@ -40,14 +40,14 @@ test('messages outside the intended group cause no send', async () => {
   assert.equal(sent.length, 0);
 });
 
-test('Messenger formatting is readable on a phone without a link preview', () => {
+test('Messenger formatting is readable on a phone with a direct BUFF link', () => {
   const reply = messengerText('**BUFF163 base prices · CNY → VND**\n\n**AWP | Redline (Field-Tested)**\n**¥200.48 CNY** · BUFF163 feed ask · [BUFF listing](https://buff.163.com/goods/123)\n`3.75 → ₫751,800   |   3.78 → ₫757,814`\nFeed snapshot 2026-11-05 16:25 UTC (57 min old) ⚠️ May miss newer listings');
   assert.match(reply, /^🎯 BUFF163 PRICE CHECK\n\n◆ AWP \| Redline \(Field-Tested\)/);
-  assert.match(reply, /💴 ¥200\.48 CNY · BUFF feed ask\n   Item #123/);
+  assert.match(reply, /💴 ¥200\.48 CNY · BUFF feed ask\n🔗 https:\/\/buff\.163\.com\/goods\/123/);
   assert.match(reply, /3\.75 → ₫751,800\n   3\.78 → ₫757,814/);
   assert.match(reply, /🕒 Feed 57 min old · 16:25 UTC/);
   assert.match(reply, /⚠️ May miss newer listings/);
-  assert.doesNotMatch(reply, /https?:\/\/|CNY → VND/);
+  assert.doesNotMatch(reply, /Item #|CNY → VND|\[BUFF listing\]/);
 });
 
 test('inbox refresh answers one new group request and ignores old or duplicate messages', async () => {
@@ -77,4 +77,82 @@ test('inbox refresh answers one new group request and ignores old or duplicate m
     assert.equal(sent.length, 1);
     assert.match(sent[0].payload.text, /Send !buff followed by skin names/);
   } finally { listener.stop(); }
+});
+
+test('refresh waits for a reply, then records the handled message for worker restarts', async () => {
+  let releaseSend;
+  let connections = 0;
+  let sends = 0;
+  const handled = [];
+  const fresh = { id: 'fresh-reply', threadId: BigInt(threadId), senderId: 999n,
+    text: '!buff', timestampMs: BigInt(Date.now()) };
+  class SlowClient extends EventEmitter {
+    connected = false;
+    get isConnected() { return this.connected; }
+    async connect() {
+      this.connected = true;
+      connections++;
+      return { user: { id: BigInt(accountId) }, initialData: {
+        threads: [{ id: BigInt(threadId), type: 2 }], messages: [fresh],
+      } };
+    }
+    getCookies() { return { c_user: accountId, xs: 'test' }; }
+    async disconnect() { this.connected = false; }
+    async sendMessage() {
+      sends++;
+      if (sends === 1) await new Promise((resolve) => { releaseSend = resolve; });
+    }
+  }
+  const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId,
+    onMessageHandled: (id) => handled.push(id) }, SlowClient, { retryMs: 10, snapshotRefreshMs: 20 });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 55));
+    assert.equal(connections, 1, 'do not disconnect the client while its reply is pending');
+    assert.deepEqual(handled, []);
+    releaseSend();
+    await new Promise((resolve) => setTimeout(resolve, 55));
+    assert.ok(connections >= 2);
+    assert.equal(sends, 1);
+    assert.deepEqual(handled, ['fresh-reply']);
+  } finally { releaseSend?.(); await listener.stop(); }
+
+  const replayed = [];
+  const restarted = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId,
+    startedAt: Date.now() - 120_000, recentMessageIds: handled }, class extends SlowClient {
+    async sendMessage() { replayed.push(true); }
+  }, { retryMs: 10, snapshotRefreshMs: 20 });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    assert.deepEqual(replayed, [], 'a restarted worker must not answer an already handled request');
+  } finally { await restarted.stop(); }
+});
+
+test('failed Messenger send is retried from the next inbox snapshot', async () => {
+  let sends = 0;
+  const handled = [];
+  const fresh = { id: 'retry-this', threadId: BigInt(threadId), senderId: 999n,
+    text: '!buff', timestampMs: BigInt(Date.now()) };
+  class FailingClient extends EventEmitter {
+    connected = false;
+    get isConnected() { return this.connected; }
+    async connect() {
+      this.connected = true;
+      return { user: { id: BigInt(accountId) }, initialData: {
+        threads: [{ id: BigInt(threadId), type: 2 }], messages: [fresh],
+      } };
+    }
+    getCookies() { return { c_user: accountId, xs: 'test' }; }
+    async disconnect() { this.connected = false; }
+    async sendMessage() {
+      sends++;
+      if (sends === 1) throw new Error('temporary send failure');
+    }
+  }
+  const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId,
+    onMessageHandled: (id) => handled.push(id) }, FailingClient, { retryMs: 10, snapshotRefreshMs: 20 });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    assert.equal(sends, 2);
+    assert.deepEqual(handled, ['retry-this']);
+  } finally { await listener.stop(); }
 });

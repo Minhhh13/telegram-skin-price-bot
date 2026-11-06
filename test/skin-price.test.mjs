@@ -84,6 +84,21 @@ test('M9 weapon type stays fixed when the Slaughter finish is abbreviated', asyn
   assert.deepEqual(otherKnife, { name: '★ Bayonet | Slaughter (Factory New)' });
 });
 
+test('unique finish words resolve within the named weapon and keep the requested wear', async () => {
+  const base = 'AK-47 | Wild Lotus';
+  assert.deepEqual(await resolveItem('ak lotus'), { names: [
+    `${base} (Factory New)`, `${base} (Minimal Wear)`, `${base} (Field-Tested)`,
+    `${base} (Well-Worn)`, `${base} (Battle-Scarred)`,
+  ] });
+  for (const [wear, full] of [
+    ['fn', 'Factory New'], ['ft', 'Field-Tested'], ['ww', 'Well-Worn'], ['bs', 'Battle-Scarred'],
+  ]) assert.deepEqual(await resolveItem(`ak lotus ${wear}`), { name: `${base} (${full})` });
+  assert.equal(aiItemSupportedByText('ak lotus ft', `${base} (Field-Tested)`), true);
+  assert.equal(aiItemSupportedByText('ak lotus ft', `${base} (Factory New)`), false);
+  assert.equal(aiItemSupportedByText('ak lotus', `Souvenir ${base}`), false);
+  assert.ok((await resolveItem('ak neon ft')).ambiguous?.length > 1);
+});
+
 test('catalog matches shorthand, reversed words, and StatTrak without guessing the weapon', async () => {
   assert.deepEqual(await resolveItem('redline awp ft'), { name: 'AWP | Redline (Field-Tested)' });
   assert.deepEqual(await resolveItem('chrome cannon ft'), { name: 'AWP | Chrome Cannon (Field-Tested)' });
@@ -96,19 +111,20 @@ test('catalog matches shorthand, reversed words, and StatTrak without guessing t
   assert.ok(catalogHintsForText('stt printstream usp mw').some((name) => name.includes('StatTrak™ USP-S | Printstream')));
 });
 
-test('fast direct lookup also sends the full original request and catalog hints to Gemini', async () => {
+test('unresolved lookup sends the full original request and catalog hints to Gemini', async () => {
   let prompt = '';
   const fetchFn = async (url, options) => {
     if (url.includes('generativelanguage.googleapis.com')) {
       prompt = JSON.parse(options.body).contents[0].parts[0].text;
-      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"items":[]}' }] } }] }) };
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"items":["AWP | Redline (Field-Tested)"]}' }] } }] }) };
     }
     return mockFetch(url, options);
   };
-  const reply = (await lookupDiscord('redline awp ft', null, 'test-key', fetchFn,
-    '@Thang Manh Nguyen please find redline awp ft for me')).join('\n');
+  const reply = (await lookupDiscord('redline awp ft plz', null, 'test-key', fetchFn,
+    '@Thang Manh Nguyen please find redline awp ft plz for me')).join('\n');
   assert.match(reply, /AWP \| Redline \(Field-Tested\)/);
-  assert.match(prompt, /Full user message: @Thang Manh Nguyen please find redline awp ft for me/);
+  assert.match(reply, /¥617\.00 CNY/);
+  assert.match(prompt, /Full user message: @Thang Manh Nguyen please find redline awp ft plz for me/);
   assert.match(prompt, /AWP \| Redline/);
 });
 
@@ -348,13 +364,13 @@ test('webhook authenticates the Telegram header and replies in the same chat', a
   assert.match(sent[0].text, /¥160\.99/);
 });
 
-test('Telegram keeps a fast catalog answer while sending the full command to Gemini', async () => {
-  let prompt = '';
+test('Telegram sends a clear catalog answer without spending a Gemini request', async () => {
+  let geminiCalls = 0;
   const sent = [];
   const fakeFetch = async (url, options) => {
     if (url.includes('generativelanguage.googleapis.com')) {
-      prompt = JSON.parse(options.body).contents[0].parts[0].text;
-      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"items":[]}' }] } }] }) };
+      geminiCalls++;
+      throw new Error('A clear catalog match should not call Gemini');
     }
     if (url.includes('api.telegram.org')) {
       sent.push(JSON.parse(options.body));
@@ -368,8 +384,73 @@ test('Telegram keeps a fast catalog answer while sending the full command to Gem
     body: JSON.stringify({ message: { chat: { id: -100123 }, message_id: 7, text: '/price@SkinBot redline awp ft' } }),
   }));
   assert.equal(response.status, 200);
+  assert.equal(geminiCalls, 0);
   assert.match(sent[0].text, /AWP \| Redline \(Field-Tested\)/);
+});
+
+test('Telegram sends an unresolved full request and catalog hints to Gemini', async () => {
+  let prompt = '';
+  const sent = [];
+  const fakeFetch = async (url, options) => {
+    if (url.includes('generativelanguage.googleapis.com')) {
+      prompt = JSON.parse(options.body).contents[0].parts[0].text;
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [
+        { text: '{"items":["AWP | Redline (Field-Tested)"]}' },
+      ] } }] }) };
+    }
+    if (url.includes('api.telegram.org')) {
+      sent.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ ok: true }) };
+    }
+    return mockFetch(url, options);
+  };
+  const handler = createHandler({ token: 'test-token', secret: 'test-secret', botUsername: 'SkinBot', geminiKey: 'test-key' }, fakeFetch);
+  const response = await handler(new Request('https://example.test/telegram', {
+    method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'test-secret' },
+    body: JSON.stringify({ message: { chat: { id: -100123 }, message_id: 8,
+      text: '/price@SkinBot please find redline awp ft plz for me' } }),
+  }));
+  assert.equal(response.status, 200);
+  assert.match(prompt, /Full user message: \/price@SkinBot please find redline awp ft plz for me/);
+  assert.match(prompt, /AWP \| Redline/);
+  assert.match(sent[0].text, /AWP \| Redline \(Field-Tested\)/);
+  assert.match(sent[0].text, /¥617\.00 CNY/);
+  assert.equal(sent[0].reply_to_message_id, 8);
+});
+
+test('Telegram photo lookup sends its caption, catalog hints, and image to Gemini', async () => {
+  let prompt = '';
+  let inlineImage;
+  const sent = [];
+  const fakeFetch = async (url, options) => {
+    if (url.endsWith('/getFile')) return { ok: true, json: async () => ({ ok: true, result: { file_path: 'photos/test.jpg' } }) };
+    if (url.includes('/file/bottest-token/')) return { ok: true, arrayBuffer: async () => new Uint8Array([0xff, 0xd8, 0xff]).buffer };
+    if (url.includes('generativelanguage.googleapis.com')) {
+      const parts = JSON.parse(options.body).contents[0].parts;
+      prompt = parts[0].text;
+      inlineImage = parts[1].inline_data;
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [
+        { text: '{"items":["AWP | Redline (Field-Tested)"]}' },
+      ] } }] }) };
+    }
+    if (url.endsWith('/sendMessage')) {
+      sent.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ ok: true }) };
+    }
+    return mockFetch(url, options);
+  };
+  const handler = createHandler({ token: 'test-token', secret: 'test-secret', botUsername: 'SkinBot', geminiKey: 'test-key' }, fakeFetch);
+  const response = await handler(new Request('https://example.test/telegram', {
+    method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'test-secret' },
+    body: JSON.stringify({ message: { chat: { id: -100123 }, message_id: 9,
+      caption: '/price@SkinBot redline awp ft', photo: [{ file_id: 'photo-id', file_size: 3 }] } }),
+  }));
+  assert.equal(response.status, 200);
   assert.match(prompt, /Full user message: \/price@SkinBot redline awp ft/);
+  assert.match(prompt, /AWP \| Redline/);
+  assert.equal(inlineImage.mime_type, 'image/jpeg');
+  assert.ok(inlineImage.data);
+  assert.match(sent[0].text, /AWP \| Redline \(Field-Tested\)/);
 });
 
 

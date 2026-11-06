@@ -40,8 +40,6 @@ export function splitDiscord(text, max = 1900) {
 
 export async function lookupDiscord(item, image, geminiKey = '', fetchFn = fetch, rawText = item) {
   if (requestsFloatFilter(item)) return [discordText(floatFilterUnavailable)];
-  const aiTask = geminiKey ? interpretItems({ text: rawText, image, candidates: catalogHintsForText(item), apiKey: geminiKey, fetchFn })
-    .catch((error) => { console.warn('AI item recognition unavailable:', error instanceof Error ? error.message : String(error)); return null; }) : null;
   let direct = null;
   if (item.trim() && !image) {
     direct = await buildReply(item, '', fetchFn);
@@ -49,7 +47,8 @@ export async function lookupDiscord(item, image, geminiKey = '', fetchFn = fetch
     const unresolved = direct.some((part) => /no matching item found|could mean:|Send \/price followed by/i.test(part));
     if (!unresolved) return splitDiscord(direct.map(discordText).join('\n\n'));
   }
-  let aiItems = aiTask ? await aiTask : null;
+  let aiItems = geminiKey ? await interpretItems({ text: rawText, image, candidates: catalogHintsForText(item), apiKey: geminiKey, fetchFn })
+    .catch((error) => { console.warn('AI item recognition unavailable:', error instanceof Error ? error.message : String(error)); return null; }) : null;
   if (aiItems && !image) aiItems = aiItems.filter((candidate) => aiItemSupportedByText(item, candidate));
   const html = aiItems?.length
     ? await buildParsedReply({ items: aiItems, rates: requestedRates(item, parseRequest) }, fetchFn)
