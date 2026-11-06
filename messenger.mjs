@@ -167,7 +167,7 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
         await client.disconnect().catch(() => {});
       }
       const active = new ClientClass(cookies, {
-        platform: 'messenger', enableE2EE: false, autoReconnect: true, logLevel: 'error',
+        platform: 'facebook', enableE2EE: false, autoReconnect: true, logLevel: 'error',
       });
       client = active;
       active.on('raw', (event) => {
