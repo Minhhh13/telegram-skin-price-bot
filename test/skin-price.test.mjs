@@ -311,7 +311,60 @@ test('M9 gemstone names resolve to the correct BUFF Doppler style filters', asyn
   assert.match(reply, /¥9,000\.00 CNY/);
   assert.match(reply, /¥10,000\.00 CNY/);
   assert.doesNotMatch(reply, /which skin finish|no matching item found|¥100\.00 CNY/);
-  assert.equal(calls.filter((url) => url.includes('/prices/buff/phases?')).length, 4);
+  assert.equal(calls.filter((url) => url.includes('/prices/buff/phases?')).length, 2);
+});
+
+test('distinct style lookups overlap with a limit of three and repeated items reuse one fetch', async () => {
+  const patterns = new Map([
+    ['★ M9 Bayonet | Doppler (Factory New)', 'Ruby'],
+    ['★ M9 Bayonet | Gamma Doppler (Factory New)', 'Emerald'],
+    ['★ Butterfly Knife | Gamma Doppler (Factory New)', 'Phase 1'],
+    ['★ Karambit | Gamma Doppler (Factory New)', 'Phase 2'],
+  ]);
+  const phaseCalls = [];
+  let batchCalls = 0;
+  let active = 0;
+  let peak = 0;
+  const fetchFn = async (url, options) => {
+    if (url.endsWith('/prices/batch')) {
+      batchCalls++;
+      return { ok: true, json: async () => ({ data: Object.fromEntries(
+        JSON.parse(options.body).items.map((name) => [name, {
+          buff: { native_currency: { code: 'CNY', ask: 100 }, updated_at: observed },
+        }]),
+      ) }) };
+    }
+    if (url.includes('/prices/buff/phases?')) {
+      const name = new URL(url).searchParams.get('item');
+      phaseCalls.push(name);
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active--;
+      return { ok: true, json: async () => ({ patterns: [{
+        pattern: patterns.get(name), native_currency: { code: 'CNY', ask: 1000 }, updated_at: observed,
+      }] }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const reply = (await buildReply(
+    '/price M9 ruby; M9 emerald; butter gamma p1 fn; karambit gamma p2 fn; M9 Bayonet Ruby',
+    '', fetchFn, Date.parse('2026-11-05T10:30:00Z'),
+  )).join('\n');
+  const labels = [
+    'M9 Bayonet | Doppler (Factory New) · Ruby',
+    'M9 Bayonet | Gamma Doppler (Factory New) · Emerald',
+    'Butterfly Knife | Gamma Doppler (Factory New) · Phase 1',
+    'Karambit | Gamma Doppler (Factory New) · Phase 2',
+  ];
+  const positions = labels.map((label) => reply.indexOf(label));
+  positions.push(reply.lastIndexOf(labels[0]));
+  assert.ok(positions.every((position) => position >= 0));
+  assert.ok(positions.every((position, index) => index === 0 || position > positions[index - 1]));
+  assert.equal(batchCalls, 1);
+  assert.deepEqual(new Set(phaseCalls), new Set(patterns.keys()));
+  assert.equal(phaseCalls.length, patterns.size);
+  assert.equal(peak, 3);
 });
 
 test('misspelled Souvenir AWP LongDog does not become AWP Duality', async () => {

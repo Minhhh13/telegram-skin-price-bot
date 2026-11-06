@@ -68,8 +68,14 @@ export async function answerMessengerMessage(client, event, config, fetchFn = fe
       await client.sendMessage(config.threadId, 'Photo recognition is unavailable right now. Please type the skin names after !buff.', options);
       return true;
     }
+    const lookupStartedAt = Date.now();
     const chunks = await lookupDiscord(request.text, image, config.geminiKey, fetchFn, event.text);
+    const lookupMs = Date.now() - lookupStartedAt;
+    const sendStartedAt = Date.now();
     for (const content of chunks) await client.sendMessage(config.threadId, messengerText(content), options);
+    console.log('Messenger request answered', {
+      lookupMs, sendMs: Date.now() - sendStartedAt, chunks: chunks.length,
+    });
   } catch (error) {
     console.error('Messenger lookup failed:', error instanceof Error ? error.message : String(error));
     await client.sendMessage(config.threadId, 'Price lookup is temporarily unavailable. Please try again shortly.', options);

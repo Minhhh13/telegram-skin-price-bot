@@ -4,6 +4,7 @@ const API = 'https://api.openskin.dev/v1';
 const DEFAULT_RATES = [3.6, 3.65, 3.7, 3.75, 3.78, 3.8];
 const MAX_ITEMS = 10;
 const MAX_AGE_MS = 5 * 60 * 1000;
+const PHASE_LOOKUP_CONCURRENCY = 3;
 
 export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK Redline</code>\n\nLeave out wear to see all available wears, or add FT, MW, FN, WW, or BS for one wear. Separate multiple skins with semicolons, commas, or new lines.\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. By default the bot shows 3.60–3.80 in 0.05 steps, plus 3.78, two rates per row.\n\nFor Dopplers, include a style such as Phase 2 to quote the lowest listing with that style filter. Exact float, paint seed and sticker filters are not available through this free price feed. Quotes are observed prices, not guaranteed trade prices.`;
 export const floatFilterUnavailable = 'I recognized the float filter, but cannot verify a BUFF163 float-range price. OpenSkin provides the general item ask, not individual BUFF listings by float. Please check the selected float range on BUFF; I will not quote the unfiltered price as its base.';
@@ -296,6 +297,20 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
     }, fetchFn);
     data = batch.data || {};
   }
+  const phaseNames = [...new Set(resolved.filter(({ match, variant }) => match.name && variant.pattern)
+    .map(({ match }) => match.name))];
+  const phasesByName = new Map();
+  let nextPhase = 0;
+  await Promise.all(Array.from({ length: Math.min(PHASE_LOOKUP_CONCURRENCY, phaseNames.length) }, async () => {
+    while (nextPhase < phaseNames.length) {
+      const name = phaseNames[nextPhase++];
+      try {
+        phasesByName.set(name, await getJson(`${API}/prices/buff/phases?item=${encodeURIComponent(name)}`, {}, fetchFn));
+      } catch (error) {
+        console.error('BUFF phase lookup failed:', error instanceof Error ? error.message : String(error));
+      }
+    }
+  }));
   const blocks = ['<b>BUFF163 base prices · CNY → VND</b>'];
   for (const { query, variant, match } of resolved) {
     if (match.names) {
@@ -304,13 +319,8 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
     }
     if (match.name) {
       if (variant.pattern) {
-        let phase;
-        try {
-          const phaseData = await getJson(`${API}/prices/buff/phases?item=${encodeURIComponent(match.name)}`, {}, fetchFn);
-          phase = phaseData.patterns?.find((entry) => entry.pattern?.toLowerCase() === variant.pattern.toLowerCase());
-        } catch (error) {
-          console.error('BUFF phase lookup failed:', error instanceof Error ? error.message : String(error));
-        }
+        const phase = phasesByName.get(match.name)?.patterns?.find((entry) =>
+          entry.pattern?.toLowerCase() === variant.pattern.toLowerCase());
         if (!phase) blocks.push(`<b>${escapeHtml(match.name)} · ${escapeHtml(variant.pattern)}</b>\nBUFF163 CNY listing unavailable.`);
         else {
           const result = { ...data[match.name], buff: phase, phasePattern: variant.pattern };
