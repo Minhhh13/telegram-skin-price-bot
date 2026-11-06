@@ -100,6 +100,37 @@ test('unique finish words resolve within the named weapon and keep the requested
   assert.ok((await resolveItem('ak neon ft')).ambiguous?.length > 1);
 });
 
+test('M4 shorthand uses the finish to choose A1 or A4 without assuming either', async () => {
+  assert.deepEqual(await resolveItem('m4'), { ambiguous: ['M4A1-S', 'M4A4'], more: false });
+  assert.deepEqual(await resolveItem('m4 printstream ft'), { name: 'M4A1-S | Printstream (Field-Tested)' });
+  assert.deepEqual(await resolveItem('m4 howl ft'), { name: 'M4A4 | Howl (Field-Tested)' });
+  assert.deepEqual(await resolveItem('a1 printstream ft'), { name: 'M4A1-S | Printstream (Field-Tested)' });
+  assert.deepEqual(await resolveItem('a4 howl ft'), { name: 'M4A4 | Howl (Field-Tested)' });
+  assert.deepEqual(await resolveItem('a1 howl ft'), { missing: true });
+  assert.deepEqual(parseRequest('a1 printstream ft and a4 howl ft').items, ['a1 printstream ft', 'a4 howl ft']);
+  assert.equal(aiItemSupportedByText('m4 printstream ft', 'AWP | Printstream (Field-Tested)'), false);
+  assert.equal(aiItemSupportedByText('a1 printstream ft', 'M4A4 | Printstream (Field-Tested)'), false);
+  assert.ok(catalogHintsForText('m4 printstream ft').every((name) => /M4A1-S|M4A4/.test(name)));
+  const noPriceFetch = () => { throw new Error('Ambiguous M4 must not fetch a price'); };
+  const reply = (await buildReply('m4', '', noPriceFetch)).join('\n');
+  assert.match(reply, /M4A1-S/);
+  assert.match(reply, /M4A4/);
+  assert.doesNotMatch(reply, /¥\d/);
+});
+
+test('bounded typo correction keeps explicit weapon, wear, and StatTrak constraints', async () => {
+  assert.deepEqual(await resolveItem('ak redlien ft'), { name: 'AK-47 | Redline (Field-Tested)' });
+  assert.deepEqual(await resolveItem('m4 prinstream ft'), { name: 'M4A1-S | Printstream (Field-Tested)' });
+  assert.deepEqual(await resolveItem('m4 hoel ft'), { name: 'M4A4 | Howl (Field-Tested)' });
+  assert.deepEqual(await resolveItem('stt a1 pritnstream ft'), { name: 'StatTrak™ M4A1-S | Printstream (Field-Tested)' });
+  assert.deepEqual(await resolveItem('sport glvoes occult ft'), { name: '★ Sport Gloves | Occult (Field-Tested)' });
+  assert.deepEqual(await resolveItem('m9 slaugther fn'), { name: '★ M9 Bayonet | Slaughter (Factory New)' });
+  assert.deepEqual(await resolveItem('a1 printstream fn'), { name: 'M4A1-S | Printstream (Factory New)' });
+  assert.deepEqual(await resolveItem('a1 nonsense ft'), { missing: true });
+  assert.equal(aiItemSupportedByText('stt a1 pritnstream ft', 'M4A1-S | Printstream (Field-Tested)'), false);
+  assert.equal(aiItemSupportedByText('stt a1 pritnstream ft', 'StatTrak™ M4A1-S | Printstream (Factory New)'), false);
+});
+
 test('catalog matches shorthand, reversed words, and StatTrak without guessing the weapon', async () => {
   assert.deepEqual(await resolveItem('redline awp ft'), { name: 'AWP | Redline (Field-Tested)' });
   assert.deepEqual(await resolveItem('chrome cannon ft'), { name: 'AWP | Chrome Cannon (Field-Tested)' });
@@ -127,6 +158,7 @@ test('unresolved lookup sends the full original request and catalog hints to Gem
   assert.match(reply, /¥617\.00 CNY/);
   assert.match(prompt, /Full user message: @Thang Manh Nguyen please find redline awp ft plz for me/);
   assert.match(prompt, /AWP \| Redline/);
+  assert.match(prompt, /"m4" may mean M4A1-S or M4A4/);
 });
 
 test('an ambiguous finish does not become an AI-guessed weapon price', async () => {

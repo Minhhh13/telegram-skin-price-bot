@@ -40,14 +40,15 @@ export function parseRequest(input, botUsername = '') {
     text = text.slice(0, rateMatch.index).trim();
   }
   text = text.replace(/\b(?:on\s+)?buff(?:163)?\b\s*$/i, '').replace(/\b(?:in\s+)?cny\b\s*$/i, '').trim();
-  const parts = text.split(/\s*[;\n]+\s*|\s*,\s*(?!\d)|\s+and\s+(?=(?:★\s*)?(?:AK|AWP|M4|USP|Glock|Desert|P250|P2000|MP|MAC|FAMAS|Galil|Karambit|Butterfly|Bayonet)\b)/i).map(cleanName).filter(Boolean);
+  const parts = text.split(/\s*[;\n]+\s*|\s*,\s*(?!\d)|\s+and\s+(?=(?:★\s*)?(?:AK|AWP|M4|M1|A1|A4|USP|Glock|Desert|P250|P2000|MP|MAC|FAMAS|Galil|Karambit|Butterfly|Bayonet)\b)/i).map(cleanName).filter(Boolean);
   if (!parts.length) throw new Error('Send /price followed by one or more skin names.');
   if (parts.length > MAX_ITEMS) throw new Error(`Send at most ${MAX_ITEMS} skins per request.`);
   return { items: parts, rates };
 }
 
 const alias = new Map([
-  ['ak', 'ak47'], ['ak47', 'ak47'], ['m4', 'm4a4'], ['m1', 'm4a1s'], ['m4a1s', 'm4a1s'], ['m4a4', 'm4a4'], ['m9', 'm9bayonet'],
+  ['ak', 'ak47'], ['ak47', 'ak47'], ['a1', 'm4a1s'], ['m1', 'm4a1s'], ['m4a1', 'm4a1s'],
+  ['m4a1s', 'm4a1s'], ['a4', 'm4a4'], ['m4a4', 'm4a4'], ['m9', 'm9bayonet'],
   ['deagle', 'deserteagle'], ['glock', 'glock18'], ['usp', 'usps'], ['glove', 'gloves'],
   ['butter', 'butterflyknife'], ['btf', 'butterflyknife'], ['talon', 'talonknife'],
   ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['dopp', 'doppler'], ['print', 'printstream'], ['ouvenir', 'souvenir'], ['dlore', 'dragonlore'],
@@ -117,9 +118,13 @@ export function catalogHintsForText(text, limit = 16) {
   const tokens = [...new Set(normalizedTokens(String(text || '')).filter((token) =>
     !ignored.has(token) && token !== 'the' && token !== 'phase' && !/^[1-4]$/.test(token)))];
   if (!tokens.length) return [];
+  const namedWeapons = tokens.filter((token) => weapons.has(token));
+  const allowedWeapons = new Set(namedWeapons);
+  if (tokens.includes('m4')) { allowedWeapons.add('m4a1s'); allowedWeapons.add('m4a4'); }
   const ranked = [];
   for (const entry of catalog) {
     if (!entry.weapon || !entry.finish) continue;
+    if (allowedWeapons.size && !allowedWeapons.has(entry.weapon)) continue;
     let score = 0;
     for (const token of tokens) {
       if (entry.tokens.includes(token)) score += wears.has(token) ? 1 : special.has(token) ? 2 : 3;
@@ -151,24 +156,67 @@ function distance(a, b, max = 3) {
   return previous[b.length];
 }
 
+function requestedWeapon(baseTokens) {
+  const compact = baseTokens.join('');
+  const exact = weaponNames.find((name) => compact.startsWith(name) || compact.endsWith(name));
+  if (exact) return {
+    names: [exact],
+    finishKey: compact.startsWith(exact) ? compact.slice(exact.length) : compact.slice(0, -exact.length),
+  };
+  if (baseTokens[0] === 'm4' || baseTokens.at(-1) === 'm4') return {
+    names: ['m4a1s', 'm4a4'],
+    finishKey: baseTokens[0] === 'm4' ? baseTokens.slice(1).join('') : baseTokens.slice(0, -1).join(''),
+  };
+
+  // Correct a misspelled weapon only at an item boundary. Keep ties as multiple
+  // candidates so a typo cannot silently turn one weapon into another.
+  const candidates = [];
+  for (const side of ['start', 'end']) {
+    for (let count = 1; count <= Math.min(3, baseTokens.length); count++) {
+      const portion = side === 'start' ? baseTokens.slice(0, count) : baseTokens.slice(-count);
+      const typed = portion.join('');
+      if (typed.length < 4) continue;
+      const maxError = typed.length >= 8 ? 2 : 1;
+      for (const name of weaponNames) {
+        if (Math.abs(name.length - typed.length) > maxError) continue;
+        const error = distance(typed, name, maxError);
+        if (error > maxError) continue;
+        const finishKey = side === 'start' ? baseTokens.slice(count).join('') : baseTokens.slice(0, -count).join('');
+        candidates.push({ name, error, finishKey });
+      }
+    }
+  }
+  if (!candidates.length) return { names: [], finishKey: compact };
+  const bestError = Math.min(...candidates.map((candidate) => candidate.error));
+  const best = candidates.filter((candidate) => candidate.error === bestError);
+  const names = [...new Set(best.map((candidate) => candidate.name))];
+  // Different token boundaries are genuinely ambiguous; do not manufacture a finish.
+  const finishKeys = [...new Set(best.map((candidate) => candidate.finishKey))];
+  if (finishKeys.length !== 1) return { names: [], finishKey: compact };
+  return { names, finishKey: finishKeys[0] };
+}
+
 function resolveFromCatalog(query, entries) {
   const corrected = String(query).replace(/\bawp\s+the\s+price\b/i, 'awp the prince');
   const tokens = [...new Set(normalizedTokens(corrected))];
-  const baseTokens = tokens.filter((token) => !special.has(token) && !ignored.has(token) && token !== 'the');
-  let compact = baseTokens.join('');
+  let baseTokens = tokens.filter((token) => !special.has(token) && !ignored.has(token) && token !== 'the');
+  const compact = baseTokens.join('');
   const gloveHint = compact.endsWith('gloves') || compact.startsWith('gloves');
-  if (compact.endsWith('gloves') && compact !== 'gloves') compact = compact.slice(0, -6);
-  else if (compact.startsWith('gloves') && compact !== 'gloves') compact = compact.slice(6);
-  const weapon = weaponNames.find((name) => compact.startsWith(name) || compact.endsWith(name)) || '';
+  if (baseTokens.length > 1 && baseTokens.at(-1) === 'gloves') baseTokens = baseTokens.slice(0, -1);
+  else if (baseTokens.length > 1 && baseTokens[0] === 'gloves') baseTokens = baseTokens.slice(1);
+  const weapon = requestedWeapon(baseTokens);
   const wear = tokens.find((token) => wears.has(token)) || '';
   const souvenir = tokens.includes('souvenir');
   const stattrak = tokens.includes('stattrak');
-  const finishKey = weapon ? compact.startsWith(weapon) ? compact.slice(weapon.length) : compact.slice(0, -weapon.length) : compact;
-  if (!finishKey || finishKey.length < 3) return weapon ? { needFinish: weapon } : { missing: true };
-  const maxError = finishKey.length >= 8 ? 2 : finishKey.length >= 5 ? 1 : 0;
+  const finishKey = weapon.finishKey;
+  if (!finishKey || finishKey.length < 3) {
+    if (weapon.names.length > 1) return { ambiguous: ['M4A1-S', 'M4A4'], more: false };
+    return weapon.names.length ? { needFinish: weapon.names[0] } : { missing: true };
+  }
+  const maxError = finishKey.length >= 6 ? 2 : finishKey.length >= 4 ? 1 : 0;
   const ranked = [];
   for (const entry of entries) {
-    if (weapon && entry.weapon !== weapon) continue;
+    if (weapon.names.length && !weapon.names.includes(entry.weapon)) continue;
     if (gloveHint && !entry.weapon.endsWith('gloves')) continue;
     if (wear && entry.wear !== wear) continue;
     if (entry.souvenir !== souvenir || entry.stattrak !== stattrak) continue;
@@ -178,7 +226,7 @@ function resolveFromCatalog(query, entries) {
       finish === finishKey ? 0
         : finishKey.length >= 4 && finish.startsWith(finishKey) ? 0.5
         : distance(finishKey, finish, maxError)),
-      weapon && finishKey.length >= 4 && entry.finishTokens.includes(finishKey) ? 0.25 : Infinity);
+      weapon.names.length && finishKey.length >= 4 && entry.finishTokens.includes(finishKey) ? 0.25 : Infinity);
     if (error <= maxError || error === 0.5 || error === 0.25) ranked.push({ entry, error });
   }
   if (!ranked.length) return { missing: true };
@@ -207,7 +255,9 @@ export function aiItemSupportedByText(source, item) {
   if (singleItem && (sourceTokens.includes('stattrak') !== candidate.stattrak ||
       sourceTokens.includes('souvenir') !== candidate.souvenir)) return false;
   const sourceWeapons = sourceTokens.filter((token) => weapons.has(token));
-  if (sourceWeapons.length && candidate.weapon && !sourceWeapons.includes(candidate.weapon)) return false;
+  const allowedWeapons = new Set(sourceWeapons);
+  if (sourceTokens.includes('m4')) { allowedWeapons.add('m4a1s'); allowedWeapons.add('m4a4'); }
+  if (allowedWeapons.size && candidate.weapon && !allowedWeapons.has(candidate.weapon)) return false;
   const finish = candidate.finishNoArticle;
   const sourceKey = sourceTokens.filter((token) => token !== 'the').join('');
   if (!finish || !sourceKey) return false;
