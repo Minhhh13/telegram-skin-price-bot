@@ -226,7 +226,7 @@ export function createDiscordHandler({ publicKey, applicationId, guildId, channe
             method: index === 0 ? 'PATCH' : 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ content, allowed_mentions: { parse: [] },
-              ...(components.length ? { components } : {}), ...(index ? { flags: 64 } : {}) }),
+              ...(components.length ? { components } : {}), flags: index ? 68 : 4 }),
             signal: AbortSignal.timeout(9000),
           });
           if (!response.ok) throw new Error(`Discord selected item response HTTP ${response.status}`);

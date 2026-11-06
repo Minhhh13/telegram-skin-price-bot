@@ -16,6 +16,18 @@ test('unmatched names suggest real catalogue items with explicit variants intact
     ['★ Sport Gloves | Occult (Factory New)']);
 });
 
+test('Sunburst suggestions preserve every explicit Minimal Wear spelling', () => {
+  const expected = ['★ Specialist Gloves | Sunburst (Minimal Wear)'];
+  for (const query of ['sunburst minwear', 'sunburst min wear', 'sunburst min-wear', 'sunburst mw']) {
+    assert.deepEqual(catalogSuggestionsForText(query), expected, query);
+  }
+});
+
+test('MP9 Hot Rod typo ranks a plausible canonical item without inventing a wear', () => {
+  assert.deepEqual(catalogSuggestionsForText('mp9 rod hotter'),
+    ['MP9 | Hot Rod (Factory New)']);
+});
+
 test('unmatched request shows candidates without making up a price', async () => {
   const noPriceFetch = () => { throw new Error('Uncertain item must not fetch a price'); };
   const reply = (await buildReply('glock twilight galxy maybe', '', noPriceFetch)).join('\n');

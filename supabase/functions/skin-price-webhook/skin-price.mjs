@@ -52,7 +52,7 @@ const alias = new Map([
   ['deagle', 'deserteagle'], ['glock', 'glock18'], ['usp', 'usps'], ['glove', 'gloves'],
   ['butter', 'butterflyknife'], ['btf', 'butterflyknife'], ['talon', 'talonknife'],
   ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['dopp', 'doppler'], ['print', 'printstream'], ['ouvenir', 'souvenir'], ['dlore', 'dragonlore'],
-  ['fn', 'factorynew'], ['mw', 'minimalwear'], ['min', 'minimalwear'], ['ft', 'fieldtested'],
+  ['fn', 'factorynew'], ['mw', 'minimalwear'], ['min', 'minimalwear'], ['minwear', 'minimalwear'], ['ft', 'fieldtested'],
   ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'], ['stt', 'stattrak'],
 ]);
 
@@ -77,7 +77,8 @@ function normalizedTokens(value) {
     .replace(/\bglock[\s-]*18\b/g, ' glock18 ')
     .replace(/\busp[\s-]*s\b/g, ' usps ')
     .replace(/dragon[\s-]*lore/g, ' dragon lore ').replace(/long[\s-]*dog/g, ' longdog ')
-    .replace(/minimal[\s-]*wear/g, ' minimalwear ').replace(/well[\s-]*worn/g, ' wellworn ')
+    .replace(/minimal[\s-]*wear/g, ' minimalwear ').replace(/\bmin[\s-]+wear\b/g, ' minimalwear ')
+    .replace(/well[\s-]*worn/g, ' wellworn ')
     .replace(/battle[\s-]*scarred/g, ' battlescarred ').replace(/m4a1[\s-]*s/g, ' m4a1s ')
     .replace(/ak[\s-]*47/g, ' ak47 ');
   for (const { pattern, token } of knifePhrases) cleaned = cleaned.replace(pattern, ` ${token} `);
@@ -160,7 +161,7 @@ function distance(a, b, max = 3) {
 // A failed exact lookup should offer real catalogue items, not invent a price.
 // Keep every explicit variant constraint while ranking the finish text. This
 // runs only for unresolved requests, so normal lookups stay on the fast path.
-export function catalogSuggestionsForText(text, limit = 5, names = null) {
+export function catalogSuggestionsForText(text, limit = 4, names = null) {
   const entries = names ? names.map((name) => entryFor(typeof name === 'string' ? name : name.name)) : catalog;
   const tokens = [...new Set(normalizedTokens(String(text || '')))];
   const wear = tokens.find((token) => wears.has(token)) || '';
@@ -213,7 +214,7 @@ export function catalogSuggestionsForText(text, limit = 5, names = null) {
   const sorted = [...ranked.values()].sort((a, b) => b.score - a.score ||
     a.entry.name.localeCompare(b.entry.name));
   return sorted.filter(({ score }) => score >= sorted[0].score - 25)
-    .slice(0, Math.max(0, Math.min(5, limit)))
+    .slice(0, Math.max(0, Math.min(4, limit)))
     .map(({ entry }) => entry.name);
 }
 
@@ -264,6 +265,17 @@ function requestedWeapon(baseTokens) {
 function resolveFromCatalog(query, entries) {
   const corrected = String(query).replace(/\bawp\s+the\s+price\b/i, 'awp the prince');
   const tokens = [...new Set(normalizedTokens(corrected))];
+  if (tokens.includes('vanilla')) {
+    const stattrak = tokens.includes('stattrak');
+    const knife = tokens.filter((token) => token !== 'vanilla' && token !== 'stattrak'
+      && !ignored.has(token)).join('');
+    if (knifeWeapons.has(knife)) {
+      const bare = entries.find((entry) => !entry.name.includes('|') &&
+        entry.stattrak === stattrak &&
+        normalizedTokens(entry.name).filter((token) => token !== 'stattrak').join('') === knife);
+      if (bare) return { name: bare.name };
+    }
+  }
   let baseTokens = tokens.filter((token) => !special.has(token) && !ignored.has(token) && token !== 'the');
   const compact = baseTokens.join('');
   const gloveHint = compact.endsWith('gloves') || compact.startsWith('gloves');
@@ -306,7 +318,7 @@ function resolveFromCatalog(query, entries) {
     const order = ['factorynew', 'minimalwear', 'fieldtested', 'wellworn', 'battlescarred'];
     return { names: matches.sort((a, b) => order.indexOf(a.wear) - order.indexOf(b.wear)).map((r) => r.name) };
   }
-  return { ambiguous: matches.slice(0, 5).map((r) => r.name), more: matches.length > 5 };
+  return { ambiguous: matches.slice(0, 4).map((r) => r.name), more: matches.length > 4 };
 }
 
 export function aiItemSupportedByText(source, item) {
@@ -394,7 +406,7 @@ function extractPattern(query) {
       else if (families?.has('gammadoppler')) lookup += ' Gamma Doppler';
     }
   }
-  const hasWear = /\b(?:factory\s*new|minimal\s*wear|field\s*tested|well\s*worn|battle\s*scarred|fn|mw|min|ft|ww|bs)\b/i.test(lookup);
+  const hasWear = /\b(?:factory\s*new|minimal\s*wear|min[\s-]*wear|field\s*tested|well\s*worn|battle\s*scarred|fn|mw|min|ft|ww|bs)\b/i.test(lookup);
   const assumedFactoryNew = !hasWear && /\bdop(?:p|pler)?\b/i.test(lookup);
   if (assumedFactoryNew) lookup += ' Factory New';
   return { lookup, pattern, assumedFactoryNew };
@@ -496,7 +508,7 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
     else if (match.ambiguous) blocks.push(`<b>${escapeHtml(query)}</b> could mean:\n${match.ambiguous.map((name) => `• ${escapeHtml(name)}`).join('\n')}${match.more ? '\n• …' : ''}\nSend the exact name.`);
     else if (match.needFinish) blocks.push(`<b>${escapeHtml(query)}</b>: which skin finish? For example, <code>AWP The Prince FT</code> or <code>AWP Redline FT</code>.`);
     else {
-      const suggestions = catalogSuggestionsForText(variant.lookup, 5, names);
+      const suggestions = catalogSuggestionsForText(variant.lookup, 4, names);
       blocks.push(suggestions.length
         ? `<b>${escapeHtml(query)}</b>: possible catalogue matches (price not quoted):\n${suggestions.map((name) => `• ${escapeHtml(name)}`).join('\n')}\nSend the intended item to get its price.`
         : `<b>${escapeHtml(query)}</b>: no matching item found. Try adding a weapon and part of the finish name.`);

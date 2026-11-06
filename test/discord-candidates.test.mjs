@@ -26,14 +26,14 @@ test('Discord candidate selector offers canonical items from the reply only', ()
   assert.deepEqual(candidateComponents('No matching item found.'), []);
 });
 
-test('Discord candidate selector limits choices to five', () => {
+test('Discord candidate selector limits choices to four', () => {
   const content = `**query**: possible catalogue matches (price not quoted):\n${[
     'AK-47 | Redline (Factory New)', 'AK-47 | Redline (Minimal Wear)',
     'AK-47 | Redline (Field-Tested)', 'AK-47 | Redline (Well-Worn)',
     'AK-47 | Redline (Battle-Scarred)', 'AWP | Redline (Field-Tested)',
   ].map((name) => `• ${name}`).join('\n')}\nSend the intended item to get its price.`;
-  assert.equal(candidateItems(content).length, 5);
-  assert.equal(candidateComponents(content)[0].components[0].options.length, 5);
+  assert.equal(candidateItems(content).length, 4);
+  assert.equal(candidateComponents(content)[0].components[0].options.length, 4);
 });
 
 test('Discord candidate selection validates the original bot message and index', () => {

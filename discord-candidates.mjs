@@ -17,7 +17,7 @@ export function candidateItems(content) {
       if (!catalog.has(name) || seen.has(name)) continue;
       seen.add(name);
       items.push(name);
-      if (items.length === 5) return items;
+      if (items.length === 4) return items;
     }
   }
   return items;
@@ -36,6 +36,6 @@ export function candidateComponents(content) {
 export function selectedCandidate(interaction) {
   if (interaction?.data?.custom_id !== candidateSelectId) return null;
   const value = interaction.data.values?.[0];
-  if (!/^[0-4]$/.test(String(value ?? ''))) return null;
+  if (!/^[0-3]$/.test(String(value ?? ''))) return null;
   return candidateItems(interaction.message?.content)[Number(value)] || null;
 }

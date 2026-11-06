@@ -67,6 +67,21 @@ test('local catalog resolves B the Monster without a catalog request or unrelate
   assert.equal(aiItemSupportedByText('Ak bthemonster ft', 'AK-47 | B the Monster (Field-Tested)'), true);
 });
 
+test('Sunburst Minimal Wear shorthand resolves directly and never changes the requested wear', async () => {
+  const expected = { name: '★ Specialist Gloves | Sunburst (Minimal Wear)' };
+  for (const query of ['sunburst minwear', 'sunburst min wear', 'sunburst min-wear', 'sunburst mw']) {
+    assert.deepEqual(await resolveItem(query), expected, query);
+    assert.equal(aiItemSupportedByText(query, expected.name), true, query);
+    assert.equal(aiItemSupportedByText(query, '★ Specialist Gloves | Sunburst (Factory New)'), false, query);
+  }
+});
+
+test('plain knife shorthand resolves to the catalog item without a finish', async () => {
+  assert.deepEqual(await resolveItem('karambit vanilla'), { name: '★ Karambit' });
+  assert.deepEqual(await resolveItem('butterfly vanilla'), { name: '★ Butterfly Knife' });
+  assert.deepEqual(await resolveItem('stt karambit vanilla'), { name: '★ StatTrak™ Karambit' });
+});
+
 test('local catalog resolves AWP The Prince with omitted article and typo', async () => {
   for (const query of ['AWP prince', 'AWP the price']) {
     const result = await resolveItem(query);

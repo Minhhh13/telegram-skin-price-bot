@@ -288,6 +288,8 @@ test('selecting an ambiguous catalog candidate prices only that item without Gem
   assert.equal(geminiCalls, 0);
   assert.match(message.content, /AK-47 \| Redline \(Field-Tested\)/);
   assert.match(message.content, /¥160\.00 CNY/);
+  assert.match(message.content, /\[BUFF listing\]\(https:\/\/buff\.163\.com\/goods\/12345\)/);
+  assert.equal(message.flags, 4);
   assert.equal(message.components[0].components[0].custom_id, 'buff:customer-quote');
   assert.equal(message.components[0].components[1].custom_id, 'buff:custom-rate');
 });
