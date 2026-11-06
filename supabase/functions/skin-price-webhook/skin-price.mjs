@@ -99,6 +99,24 @@ function entryFor(name) {
     wear: tokens.find((token) => wears.has(token)) || '', souvenir: tokens.includes('souvenir'), stattrak: tokens.includes('stattrak') };
 }
 const catalog = itemNames.map(entryFor);
+const catalogFinishKeys = new Set(catalog.filter((entry) => entry.weapon && entry.finish)
+  .flatMap((entry) => [`${entry.weapon}|${entry.finish}`, `${entry.weapon}|${entry.finishNoArticle}`]));
+const partialWears = new Map([
+  ['factory', 'factorynew'], ['minimal', 'minimalwear'], ['field', 'fieldtested'],
+  ['well', 'wellworn'], ['battle', 'battlescarred'],
+]);
+
+// A request may abbreviate a wear to one word. Keep catalogue names intact:
+// "Field Agent" and "K.O. Factory" are finishes, not wear descriptions.
+function requestTokens(value) {
+  const tokens = normalizedTokens(String(value || ''));
+  const partial = tokens.find((token) => partialWears.has(token));
+  if (!partial) return tokens;
+  const base = tokens.filter((token) => !special.has(token) && !ignored.has(token) && token !== 'the');
+  const weapon = requestedWeapon(base);
+  if (weapon.names.some((name) => catalogFinishKeys.has(`${name}|${weapon.finishKey}`))) return tokens;
+  return tokens.map((token) => partialWears.get(token) || token);
+}
 const dopplerFamiliesByKnife = new Map();
 for (const entry of catalog) {
   if (!knifeWeapons.has(entry.weapon) || entry.wear !== 'factorynew' || entry.stattrak || entry.souvenir ||
@@ -117,16 +135,20 @@ export function isLikelySkinRequest(text) {
 }
 
 export function catalogHintsForText(text, limit = 16) {
-  const tokens = [...new Set(normalizedTokens(String(text || '')).filter((token) =>
+  const tokens = [...new Set(requestTokens(text).filter((token) =>
     !ignored.has(token) && token !== 'the' && token !== 'phase' && !/^[1-4]$/.test(token)))];
   if (!tokens.length) return [];
-  const namedWeapons = tokens.filter((token) => weapons.has(token));
-  const allowedWeapons = new Set(namedWeapons);
-  if (tokens.includes('m4')) { allowedWeapons.add('m4a1s'); allowedWeapons.add('m4a4'); }
+  const allowedWeapons = new Set([...tokens.filter((token) => weapons.has(token)),
+    ...requestedWeapon(tokens.filter((token) => !special.has(token))).names]);
+  const wear = tokens.find((token) => wears.has(token)) || '';
   const ranked = [];
   for (const entry of catalog) {
     if (!entry.weapon || !entry.finish) continue;
     if (allowedWeapons.size && !allowedWeapons.has(entry.weapon)) continue;
+    if (wear && entry.wear !== wear) continue;
+    if (entry.stattrak !== tokens.includes('stattrak') || entry.souvenir !== tokens.includes('souvenir')) continue;
+    if (tokens.includes('doppler') && !tokens.includes('gamma') && entry.finish.includes('gamma')) continue;
+    if (tokens.includes('gamma') && entry.finish === 'doppler') continue;
     let score = 0;
     for (const token of tokens) {
       if (entry.tokens.includes(token)) score += wears.has(token) ? 1 : special.has(token) ? 2 : 3;
@@ -161,9 +183,9 @@ function distance(a, b, max = 3) {
 // A failed exact lookup should offer real catalogue items, not invent a price.
 // Keep every explicit variant constraint while ranking the finish text. This
 // runs only for unresolved requests, so normal lookups stay on the fast path.
-export function catalogSuggestionsForText(text, limit = 4, names = null) {
+export function catalogSuggestionsForText(text, limit = 5, names = null) {
   const entries = names ? names.map((name) => entryFor(typeof name === 'string' ? name : name.name)) : catalog;
-  const tokens = [...new Set(normalizedTokens(String(text || '')))];
+  const tokens = [...new Set(requestTokens(text))];
   const wear = tokens.find((token) => wears.has(token)) || '';
   const stattrak = tokens.includes('stattrak');
   const souvenir = tokens.includes('souvenir');
@@ -184,6 +206,7 @@ export function catalogSuggestionsForText(text, limit = 4, names = null) {
     if (entry.stattrak !== stattrak || entry.souvenir !== souvenir) continue;
     if (finishKey.includes('gamma') && !entry.finish.includes('gamma')) continue;
     if (finishKey.includes('doppler') && !entry.finish.includes('doppler')) continue;
+    if (finishKey.includes('doppler') && !finishKey.includes('gamma') && entry.finish.includes('gamma')) continue;
 
     const finishKeys = [...new Set([entry.finish, entry.finishNoArticle])];
     let score = 0;
@@ -214,7 +237,7 @@ export function catalogSuggestionsForText(text, limit = 4, names = null) {
   const sorted = [...ranked.values()].sort((a, b) => b.score - a.score ||
     a.entry.name.localeCompare(b.entry.name));
   return sorted.filter(({ score }) => score >= sorted[0].score - 25)
-    .slice(0, Math.max(0, Math.min(4, limit)))
+    .slice(0, Math.max(0, Math.min(5, limit)))
     .map(({ entry }) => entry.name);
 }
 
@@ -233,6 +256,18 @@ function requestedWeapon(baseTokens) {
     names: ['m4a1s', 'm4a4'],
     finishKey: baseTokens[0] === 'm4' ? baseTokens.slice(1).join('') : baseTokens.slice(0, -1).join(''),
   };
+
+  // Only expand a weapon prefix when it identifies exactly one catalogue type.
+  // This preserves the weapon constraint in shorthand such as "karam dop p4".
+  for (const side of ['start', 'end']) {
+    const typed = side === 'start' ? baseTokens[0] : baseTokens.at(-1);
+    if (!typed || typed.length < 4) continue;
+    const matches = weaponNames.filter((name) => name.startsWith(typed) &&
+      typed.length / name.length >= 0.6);
+    if (matches.length !== 1) continue;
+    const finishKey = side === 'start' ? baseTokens.slice(1).join('') : baseTokens.slice(0, -1).join('');
+    return { names: matches, finishKey };
+  }
 
   // Correct a misspelled weapon only at an item boundary. Keep ties as multiple
   // candidates so a typo cannot silently turn one weapon into another.
@@ -264,15 +299,15 @@ function requestedWeapon(baseTokens) {
 
 function resolveFromCatalog(query, entries) {
   const corrected = String(query).replace(/\bawp\s+the\s+price\b/i, 'awp the prince');
-  const tokens = [...new Set(normalizedTokens(corrected))];
+  const tokens = [...new Set(requestTokens(corrected))];
   if (tokens.includes('vanilla')) {
     const stattrak = tokens.includes('stattrak');
-    const knife = tokens.filter((token) => token !== 'vanilla' && token !== 'stattrak'
-      && !ignored.has(token)).join('');
-    if (knifeWeapons.has(knife)) {
+    const knife = requestedWeapon(tokens.filter((token) => token !== 'vanilla' && token !== 'stattrak'
+      && !ignored.has(token)));
+    if (knife.names.length === 1 && !knife.finishKey && knifeWeapons.has(knife.names[0])) {
       const bare = entries.find((entry) => !entry.name.includes('|') &&
         entry.stattrak === stattrak &&
-        normalizedTokens(entry.name).filter((token) => token !== 'stattrak').join('') === knife);
+        normalizedTokens(entry.name).filter((token) => token !== 'stattrak').join('') === knife.names[0]);
       if (bare) return { name: bare.name };
     }
   }
@@ -318,11 +353,11 @@ function resolveFromCatalog(query, entries) {
     const order = ['factorynew', 'minimalwear', 'fieldtested', 'wellworn', 'battlescarred'];
     return { names: matches.sort((a, b) => order.indexOf(a.wear) - order.indexOf(b.wear)).map((r) => r.name) };
   }
-  return { ambiguous: matches.slice(0, 4).map((r) => r.name), more: matches.length > 4 };
+  return { ambiguous: matches.slice(0, 5).map((r) => r.name), more: matches.length > 5 };
 }
 
 export function aiItemSupportedByText(source, item) {
-  const sourceTokens = normalizedTokens(source);
+  const sourceTokens = requestTokens(source);
   const candidate = entryFor(item);
   const sourceWears = [...new Set(sourceTokens.filter((token) => wears.has(token)))];
   const singleItem = (() => {
@@ -334,9 +369,9 @@ export function aiItemSupportedByText(source, item) {
       (!sourceTokens.includes('souvenir') && candidate.souvenir)) return false;
   if (singleItem && (sourceTokens.includes('stattrak') !== candidate.stattrak ||
       sourceTokens.includes('souvenir') !== candidate.souvenir)) return false;
-  const sourceWeapons = sourceTokens.filter((token) => weapons.has(token));
-  const allowedWeapons = new Set(sourceWeapons);
-  if (sourceTokens.includes('m4')) { allowedWeapons.add('m4a1s'); allowedWeapons.add('m4a4'); }
+  const allowedWeapons = new Set([...sourceTokens.filter((token) => weapons.has(token)),
+    ...requestedWeapon(sourceTokens.filter((token) => !special.has(token) &&
+      !ignored.has(token) && token !== 'the')).names]);
   if (allowedWeapons.size && candidate.weapon && !allowedWeapons.has(candidate.weapon)) return false;
   const finish = candidate.finishNoArticle;
   const sourceKey = sourceTokens.filter((token) => token !== 'the').join('');
@@ -344,7 +379,7 @@ export function aiItemSupportedByText(source, item) {
   if (sourceKey.includes(finish)) return true;
   const exactFinishWord = candidate.finishTokens.find((token) => token.length >= 4 &&
     token !== 'the' && sourceTokens.includes(token));
-  if (candidate.weapon && sourceWeapons.includes(candidate.weapon) && exactFinishWord) {
+  if (candidate.weapon && allowedWeapons.has(candidate.weapon) && exactFinishWord) {
     const finishes = new Set(catalog.filter((entry) => entry.weapon === candidate.weapon &&
       entry.souvenir === candidate.souvenir && entry.stattrak === candidate.stattrak &&
       entry.finishTokens.includes(exactFinishWord)).map((entry) => entry.finish));
@@ -392,21 +427,21 @@ function extractPattern(query) {
   // BUFF lists these gemstones as style filters on Doppler items, not as item names.
   const gemstone = ['Ruby', 'Sapphire', 'Black Pearl', 'Emerald'].includes(pattern);
   if (gemstone && !/\bdop(?:p|pler)?\b/i.test(lookup)) {
-    const knife = normalizedTokens(lookup).some((token) => knifeWeapons.has(token));
+    const knife = requestedWeapon(normalizedTokens(lookup)).names.some((name) => knifeWeapons.has(name));
     if (knife) lookup += /\bgamma\b/i.test(lookup) ? ' Doppler'
       : pattern === 'Emerald' ? ' Gamma Doppler' : ' Doppler';
   }
   if (/^Phase [1-4]$/.test(pattern) && !/\bdop(?:p|pler)?\b/i.test(lookup)) {
     if (/\bgamma\b/i.test(lookup)) lookup += ' Doppler';
     else {
-      const weapon = normalizedTokens(lookup).find((token) => knifeWeapons.has(token));
+      const weapon = requestedWeapon(normalizedTokens(lookup)).names.find((name) => knifeWeapons.has(name));
       const families = dopplerFamiliesByKnife.get(weapon);
       if (families?.size > 1) return { lookup, pattern, needDopplerFamily: true };
       if (families?.has('doppler')) lookup += ' Doppler';
       else if (families?.has('gammadoppler')) lookup += ' Gamma Doppler';
     }
   }
-  const hasWear = /\b(?:factory\s*new|minimal\s*wear|min[\s-]*wear|field\s*tested|well\s*worn|battle\s*scarred|fn|mw|min|ft|ww|bs)\b/i.test(lookup);
+  const hasWear = /\b(?:factory(?:\s*new)?|minimal(?:\s*wear)?|min[\s-]*wear|field(?:\s*tested)?|well(?:\s*worn)?|battle(?:\s*scarred)?|fn|mw|min|ft|ww|bs)\b/i.test(lookup);
   const assumedFactoryNew = !hasWear && /\bdop(?:p|pler)?\b/i.test(lookup);
   if (assumedFactoryNew) lookup += ' Factory New';
   return { lookup, pattern, assumedFactoryNew };
@@ -508,7 +543,7 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
     else if (match.ambiguous) blocks.push(`<b>${escapeHtml(query)}</b> could mean:\n${match.ambiguous.map((name) => `• ${escapeHtml(name)}`).join('\n')}${match.more ? '\n• …' : ''}\nSend the exact name.`);
     else if (match.needFinish) blocks.push(`<b>${escapeHtml(query)}</b>: which skin finish? For example, <code>AWP The Prince FT</code> or <code>AWP Redline FT</code>.`);
     else {
-      const suggestions = catalogSuggestionsForText(variant.lookup, 4, names);
+      const suggestions = catalogSuggestionsForText(variant.lookup, 5, names);
       blocks.push(suggestions.length
         ? `<b>${escapeHtml(query)}</b>: possible catalogue matches (price not quoted):\n${suggestions.map((name) => `• ${escapeHtml(name)}`).join('\n')}\nSend the intended item to get its price.`
         : `<b>${escapeHtml(query)}</b>: no matching item found. Try adding a weapon and part of the finish name.`);

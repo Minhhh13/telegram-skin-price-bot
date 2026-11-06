@@ -67,6 +67,20 @@ test('local catalog resolves B the Monster without a catalog request or unrelate
   assert.equal(aiItemSupportedByText('Ak bthemonster ft', 'AK-47 | B the Monster (Field-Tested)'), true);
 });
 
+test('partial wear word field resolves B the Monster as Field-Tested, including the AI guard', async () => {
+  const noNetwork = () => { throw new Error('Catalog lookup should be local'); };
+  const request = 'Ak B the monster field';
+  const correct = 'AK-47 | B the Monster (Field-Tested)';
+  assert.deepEqual(await resolveItem(request, noNetwork), { name: correct });
+  assert.equal(aiItemSupportedByText(request, correct), true);
+  assert.equal(aiItemSupportedByText(request, 'AK-47 | B the Monster (Factory New)'), false);
+  assert.equal(aiItemSupportedByText(request, 'AK-47 | Fuel Injector (Field-Tested)'), false);
+  assert.deepEqual(await resolveItem('specialist gloves field agent ft'),
+    { name: '★ Specialist Gloves | Field Agent (Field-Tested)' });
+  assert.deepEqual(await resolveItem('ump45 ko factory ft'),
+    { name: 'UMP-45 | K.O. Factory (Field-Tested)' });
+});
+
 test('Sunburst Minimal Wear shorthand resolves directly and never changes the requested wear', async () => {
   const expected = { name: '★ Specialist Gloves | Sunburst (Minimal Wear)' };
   for (const query of ['sunburst minwear', 'sunburst min wear', 'sunburst min-wear', 'sunburst mw']) {
@@ -78,6 +92,7 @@ test('Sunburst Minimal Wear shorthand resolves directly and never changes the re
 
 test('plain knife shorthand resolves to the catalog item without a finish', async () => {
   assert.deepEqual(await resolveItem('karambit vanilla'), { name: '★ Karambit' });
+  assert.deepEqual(await resolveItem('karam vanilla'), { name: '★ Karambit' });
   assert.deepEqual(await resolveItem('butterfly vanilla'), { name: '★ Butterfly Knife' });
   assert.deepEqual(await resolveItem('stt karambit vanilla'), { name: '★ StatTrak™ Karambit' });
 });
@@ -306,6 +321,34 @@ test('natural request resolves three skins and quotes the specified Doppler phas
   assert.match(reply, /¥10,200\.00 CNY/);
   assert.match(reply, /3\.78 → ₫38,556,000   \|   3\.80 → ₫38,760,000/);
   assert.equal(requests.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
+});
+
+test('Karambit prefix and Doppler shorthand quote only the requested Phase 4', async () => {
+  const item = '★ Karambit | Doppler (Factory New)';
+  const calls = [];
+  const fetchFn = async (url, options) => {
+    calls.push(url);
+    if (url.endsWith('/prices/batch')) {
+      assert.deepEqual(JSON.parse(options.body).items, [item]);
+      return { ok: true, json: async () => ({ data: { [item]: {
+        buff: { native_currency: { code: 'CNY', ask: 5900 }, updated_at: observed },
+      } } }) };
+    }
+    if (url.includes('/prices/buff/phases?')) {
+      assert.equal(new URL(url).searchParams.get('item'), item);
+      return { ok: true, json: async () => ({ patterns: [
+        { pattern: 'Phase 3', native_currency: { code: 'CNY', ask: 7400 }, updated_at: observed },
+        { pattern: 'Phase 4', native_currency: { code: 'CNY', ask: 7500 }, updated_at: observed },
+      ] }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  assert.deepEqual(await resolveItem('Karam dop fn'), { name: item });
+  const reply = (await buildReply('Karam dop p4', '', fetchFn, Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+  assert.match(reply, /Karambit \| Doppler \(Factory New\) · Phase 4/);
+  assert.match(reply, /¥7,500\.00 CNY/);
+  assert.doesNotMatch(reply, /Bayonet \||Gamma Doppler|¥5,900\.00 CNY|¥7,400\.00 CNY/);
+  assert.equal(calls.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
 });
 
 test('Gamma Doppler Phase 2 uses the filtered phase listing, including abbreviated request', async () => {

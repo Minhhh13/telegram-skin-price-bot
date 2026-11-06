@@ -23,6 +23,21 @@ test('Sunburst suggestions preserve every explicit Minimal Wear spelling', () =>
   }
 });
 
+test('suggestions preserve a spelled-out partial wear and a unique weapon prefix', () => {
+  assert.deepEqual(catalogSuggestionsForText('Ak B the monster field'),
+    ['AK-47 | B the Monster (Field-Tested)']);
+  const karambit = catalogSuggestionsForText('Karam dop');
+  assert.deepEqual(karambit, ['★ Karambit | Doppler (Factory New)']);
+  assert.ok(karambit.every((name) => name.startsWith('★ Karambit | ')));
+});
+
+test('an ambiguous query offers only plausible catalogue items without filling all five slots', () => {
+  assert.deepEqual(catalogSuggestionsForText('redline ft', 5), [
+    'AK-47 | Redline (Field-Tested)', 'AWP | Redline (Field-Tested)',
+  ]);
+  assert.deepEqual(catalogSuggestionsForText('ak nonsense ft', 5), []);
+});
+
 test('MP9 Hot Rod typo ranks a plausible canonical item without inventing a wear', () => {
   assert.deepEqual(catalogSuggestionsForText('mp9 rod hotter'),
     ['MP9 | Hot Rod (Factory New)']);

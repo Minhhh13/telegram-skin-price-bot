@@ -4,7 +4,7 @@ import { candidateComponents, candidateItems, candidateSelectId, selectedCandida
 
 const reply = `**BUFF163 base prices · CNY → VND**
 
-**Sunburst minwear**: possible catalogue matches (price not quoted):
+**Sunburst**: possible catalogue matches (price not quoted):
 • ★ Specialist Gloves | Sunburst (Factory New)
 • ★ Specialist Gloves | Sunburst (Minimal Wear)
 Send the intended item to get its price.
@@ -26,14 +26,28 @@ test('Discord candidate selector offers canonical items from the reply only', ()
   assert.deepEqual(candidateComponents('No matching item found.'), []);
 });
 
-test('Discord candidate selector limits choices to four', () => {
+test('Discord candidate selector offers up to five real choices, without padding', () => {
   const content = `**query**: possible catalogue matches (price not quoted):\n${[
-    'AK-47 | Redline (Factory New)', 'AK-47 | Redline (Minimal Wear)',
-    'AK-47 | Redline (Field-Tested)', 'AK-47 | Redline (Well-Worn)',
-    'AK-47 | Redline (Battle-Scarred)', 'AWP | Redline (Field-Tested)',
+    'AK-47 | Wild Lotus (Factory New)', 'AK-47 | Wild Lotus (Minimal Wear)',
+    'AK-47 | Wild Lotus (Field-Tested)', 'AK-47 | Wild Lotus (Well-Worn)',
+    'AK-47 | Wild Lotus (Battle-Scarred)', 'AWP | Redline (Field-Tested)',
   ].map((name) => `• ${name}`).join('\n')}\nSend the intended item to get its price.`;
-  assert.equal(candidateItems(content).length, 4);
-  assert.equal(candidateComponents(content)[0].components[0].options.length, 4);
+  assert.equal(candidateItems(content).length, 5);
+  assert.equal(candidateComponents(content)[0].components[0].options.length, 5);
+  assert.deepEqual(candidateItems(content), [
+    'AK-47 | Wild Lotus (Factory New)', 'AK-47 | Wild Lotus (Minimal Wear)',
+    'AK-47 | Wild Lotus (Field-Tested)', 'AK-47 | Wild Lotus (Well-Worn)',
+    'AK-47 | Wild Lotus (Battle-Scarred)',
+  ]);
+  assert.equal(selectedCandidate({
+    data: { custom_id: candidateSelectId, values: ['4'] }, message: { content },
+  }), 'AK-47 | Wild Lotus (Battle-Scarred)');
+  assert.equal(selectedCandidate({
+    data: { custom_id: candidateSelectId, values: ['5'] }, message: { content },
+  }), null);
+  const oneChoice = '**query**: possible catalogue matches (price not quoted):\n• AK-47 | Redline (Field-Tested)\nSend the intended item to get its price.';
+  assert.deepEqual(candidateItems(oneChoice), ['AK-47 | Redline (Field-Tested)']);
+  assert.equal(candidateComponents(oneChoice)[0].components[0].options.length, 1);
 });
 
 test('Discord candidate selection validates the original bot message and index', () => {
