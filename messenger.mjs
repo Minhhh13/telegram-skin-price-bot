@@ -5,6 +5,7 @@ import { isLikelySkinRequest } from './supabase/functions/skin-price-webhook/ski
 
 const MAX_IMAGE_BYTES = 5_000_000;
 const RETRY_MS = 15_000;
+const SNAPSHOT_REFRESH_MS = 60_000;
 const SOCKET_READY_GRACE_MS = 90_000;
 const AUTH_RETRY_INITIAL_MS = 60_000;
 const AUTH_RETRY_MAX_MS = 15 * 60_000;
@@ -249,9 +250,9 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
     // Give the socket time to finish its initial database sync before recycling it.
     const connectedForMs = Date.now() - lastConnectedAt;
     const readyGraceMs = intervals.socketReadyGraceMs ?? SOCKET_READY_GRACE_MS;
-    // The supervisor already recycles this worker every 18 minutes to refresh
-    // its inbox snapshot. Do not interrupt a healthy live socket every 5 minutes.
-    const forcedRefreshMs = intervals.snapshotRefreshMs;
+    // The socket can report ready after mailbox sync has timed out. Refresh the
+    // HTTP inbox snapshot regularly until live delivery is reliable again.
+    const forcedRefreshMs = intervals.snapshotRefreshMs ?? SNAPSHOT_REFRESH_MS;
     if (!client || (!socketReady() && connectedForMs >= readyGraceMs) ||
         (Number.isFinite(forcedRefreshMs) && forcedRefreshMs > 0 &&
           connectedForMs >= forcedRefreshMs)) void connect(true);

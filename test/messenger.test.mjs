@@ -53,7 +53,7 @@ test('Messenger formatting is readable on a phone with a direct BUFF link', () =
   assert.doesNotMatch(reply, /Item #|CNY → VND|\[BUFF listing\]/);
 });
 
-test('inbox refresh answers one new group request and ignores old or duplicate messages', async () => {
+test('inbox refresh answers a request from the second snapshot once despite later duplicate snapshots', async () => {
   const sent = [];
   const cookieUpdates = [];
   let connections = 0;
@@ -77,8 +77,8 @@ test('inbox refresh answers one new group request and ignores old or duplicate m
     onCookiesUpdated: (cookies) => cookieUpdates.push(cookies) }, FakeClient,
     { retryMs: 10, snapshotRefreshMs: 20 });
   try {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.ok(connections >= 2);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.ok(connections >= 3, 'a later snapshot must replay the same message for dedup verification');
     assert.equal(sent.length, 1);
     assert.match(sent[0].payload.text, /Send !buff followed by skin names/);
     assert.deepEqual(cookieUpdates, [`c_user=${accountId}; xs=refreshed-session`]);
@@ -206,7 +206,7 @@ test('reconnects when the live socket is not ready despite a connected flag', as
   } finally { await listener.stop(); }
 });
 
-test('keeps a fully ready socket connected until the supervisor recycles its worker', async () => {
+test('can keep a fully ready socket connected when snapshot refresh is explicitly disabled', async () => {
   let connections = 0;
   let disconnects = 0;
   class ReadyClient extends EventEmitter {
@@ -221,7 +221,7 @@ test('keeps a fully ready socket connected until the supervisor recycles its wor
     async disconnect() { disconnects++; }
   }
   const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId },
-    ReadyClient, { retryMs: 5, socketReadyGraceMs: 20 });
+    ReadyClient, { retryMs: 5, socketReadyGraceMs: 20, snapshotRefreshMs: Infinity });
   try {
     await new Promise((resolve) => setTimeout(resolve, 70));
     assert.equal(connections, 1, 'a healthy socket must not be interrupted for an inbox snapshot');
