@@ -360,6 +360,10 @@ func sendMessage(ctx context.Context, client *messagix.Client, targetThreadID in
 }
 
 func main() {
+	// Meta adds optional Lightspeed fields faster than the decoder is updated.
+	// Keep actionable errors while avoiding hundreds of harmless warnings on
+	// each inbox refresh.
+	zerolog.SetGlobalLevel(zerolog.ErrorLevel)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	threadID, err := strconv.ParseInt(os.Getenv("MESSENGER_THREAD_ID"), 10, 64)
