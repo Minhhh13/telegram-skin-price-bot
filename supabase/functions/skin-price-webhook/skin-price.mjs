@@ -74,6 +74,7 @@ for (const name of knifeTypes) {
 function normalizedTokens(value) {
   let cleaned = value.toLowerCase().replaceAll('stat trak', 'stattrak').replaceAll('stat-trak', 'stattrak');
   cleaned = cleaned.replace(/field[\s-]*tested/g, ' fieldtested ').replace(/factory[\s-]*new/g, ' factorynew ')
+    .replace(/\bglock[\s-]*18\b/g, ' glock18 ')
     .replace(/\busp[\s-]*s\b/g, ' usps ')
     .replace(/dragon[\s-]*lore/g, ' dragon lore ').replace(/long[\s-]*dog/g, ' longdog ')
     .replace(/minimal[\s-]*wear/g, ' minimalwear ').replace(/well[\s-]*worn/g, ' wellworn ')
@@ -156,9 +157,73 @@ function distance(a, b, max = 3) {
   return previous[b.length];
 }
 
+// A failed exact lookup should offer real catalogue items, not invent a price.
+// Keep every explicit variant constraint while ranking the finish text. This
+// runs only for unresolved requests, so normal lookups stay on the fast path.
+export function catalogSuggestionsForText(text, limit = 5, names = null) {
+  const entries = names ? names.map((name) => entryFor(typeof name === 'string' ? name : name.name)) : catalog;
+  const tokens = [...new Set(normalizedTokens(String(text || '')))];
+  const wear = tokens.find((token) => wears.has(token)) || '';
+  const stattrak = tokens.includes('stattrak');
+  const souvenir = tokens.includes('souvenir');
+  let baseTokens = tokens.filter((token) => !special.has(token) && !ignored.has(token) &&
+    token !== 'the' && token !== 'phase' && !/^p[1-4]$|^[1-4]$/.test(token));
+  const gloveHint = baseTokens.includes('gloves');
+  if (baseTokens.length > 1 && baseTokens[0] === 'gloves') baseTokens = baseTokens.slice(1);
+  else if (baseTokens.length > 1 && baseTokens.at(-1) === 'gloves') baseTokens = baseTokens.slice(0, -1);
+  const weapon = requestedWeapon(baseTokens);
+  const finishKey = weapon.finishKey;
+  if (finishKey.length < 3) return [];
+
+  const ranked = new Map();
+  for (const entry of entries) {
+    if (!entry.weapon || !entry.finish || (weapon.names.length && !weapon.names.includes(entry.weapon))) continue;
+    if (gloveHint && !entry.weapon.endsWith('gloves')) continue;
+    if (wear && entry.wear !== wear) continue;
+    if (entry.stattrak !== stattrak || entry.souvenir !== souvenir) continue;
+    if (finishKey.includes('gamma') && !entry.finish.includes('gamma')) continue;
+    if (finishKey.includes('doppler') && !entry.finish.includes('doppler')) continue;
+
+    const finishKeys = [...new Set([entry.finish, entry.finishNoArticle])];
+    let score = 0;
+    if (finishKeys.includes(finishKey)) score = 100;
+    else if (finishKey.length >= 3 && finishKeys.some((key) => key.includes(finishKey))) {
+      score = 70 + Math.min(20, finishKey.length);
+    } else {
+      const error = Math.min(...finishKeys.map((key) => distance(finishKey, key, 2)));
+      if (error <= 2) score = 60 - error * 5;
+      else {
+        const matchingWords = baseTokens.filter((token) => token.length >= 3 &&
+          entry.finishTokens.some((word) => word === token || word.startsWith(token) ||
+            (token.length >= 5 && word[0] === token[0] && distance(token, word, 2) <= 2)));
+        if (matchingWords.length) score = 20 + matchingWords.length * 8 -
+          (baseTokens.length - matchingWords.length) * 5;
+      }
+    }
+    if (score <= 0) continue;
+
+    const base = `${entry.weapon}|${entry.finish}|${entry.stattrak}|${entry.souvenir}`;
+    const wearOrder = ['factorynew', 'minimalwear', 'fieldtested', 'wellworn', 'battlescarred'];
+    const previous = ranked.get(base);
+    if (!previous || score > previous.score ||
+        (score === previous.score && wearOrder.indexOf(entry.wear) < wearOrder.indexOf(previous.entry.wear))) {
+      ranked.set(base, { entry, score });
+    }
+  }
+  const sorted = [...ranked.values()].sort((a, b) => b.score - a.score ||
+    a.entry.name.localeCompare(b.entry.name));
+  return sorted.filter(({ score }) => score >= sorted[0].score - 25)
+    .slice(0, Math.max(0, Math.min(5, limit)))
+    .map(({ entry }) => entry.name);
+}
+
 function requestedWeapon(baseTokens) {
   const compact = baseTokens.join('');
-  const exact = weaponNames.find((name) => compact.startsWith(name) || compact.endsWith(name));
+  // A canonical item starts with its weapon. Prefer that boundary because a
+  // finish can itself match another catalogue category (for example, 3rd
+  // Commando Company), while reversed requests still need the suffix case.
+  const exact = weaponNames.find((name) => compact.startsWith(name)) ||
+    weaponNames.find((name) => compact.endsWith(name));
   if (exact) return {
     names: [exact],
     finishKey: compact.startsWith(exact) ? compact.slice(exact.length) : compact.slice(0, -exact.length),
@@ -202,14 +267,14 @@ function resolveFromCatalog(query, entries) {
   let baseTokens = tokens.filter((token) => !special.has(token) && !ignored.has(token) && token !== 'the');
   const compact = baseTokens.join('');
   const gloveHint = compact.endsWith('gloves') || compact.startsWith('gloves');
-  if (baseTokens.length > 1 && baseTokens.at(-1) === 'gloves') baseTokens = baseTokens.slice(0, -1);
-  else if (baseTokens.length > 1 && baseTokens[0] === 'gloves') baseTokens = baseTokens.slice(1);
+  if (!weapons.has(compact) && baseTokens.length > 1 && baseTokens.at(-1) === 'gloves') baseTokens = baseTokens.slice(0, -1);
+  else if (!weapons.has(compact) && baseTokens.length > 1 && baseTokens[0] === 'gloves') baseTokens = baseTokens.slice(1);
   const weapon = requestedWeapon(baseTokens);
   const wear = tokens.find((token) => wears.has(token)) || '';
   const souvenir = tokens.includes('souvenir');
   const stattrak = tokens.includes('stattrak');
   const finishKey = weapon.finishKey;
-  if (!finishKey || finishKey.length < 3) {
+  if (!finishKey) {
     if (weapon.names.length > 1) return { ambiguous: ['M4A1-S', 'M4A4'], more: false };
     return weapon.names.length ? { needFinish: weapon.names[0] } : { missing: true };
   }
@@ -226,8 +291,11 @@ function resolveFromCatalog(query, entries) {
       finish === finishKey ? 0
         : finishKey.length >= 4 && finish.startsWith(finishKey) ? 0.5
         : distance(finishKey, finish, maxError)),
-      weapon.names.length && finishKey.length >= 4 && entry.finishTokens.includes(finishKey) ? 0.25 : Infinity);
-    if (error <= maxError || error === 0.5 || error === 0.25) ranked.push({ entry, error });
+      weapon.names.length && entry.finishTokens.includes(finishKey) ? 0.25
+        : weapon.names.length && finishKey.length >= 3 && entry.finishTokens.some((token) => token.startsWith(finishKey)) ? 0.6
+        : weapon.names.length && finishKey.length >= 4 && entry.finishTokens.some((token) => token.includes(finishKey)) ? 0.75
+        : Infinity);
+    if (error <= maxError || error < 1) ranked.push({ entry, error });
   }
   if (!ranked.length) return { missing: true };
   const best = Math.min(...ranked.map((r) => r.error));
@@ -378,10 +446,24 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
   const phaseNames = [...new Set(resolved.filter(({ match, variant }) => match.name && variant.pattern)
     .map(({ match }) => match.name))];
   const phasesByName = new Map();
+  const requestedPatternsByName = new Map();
+  for (const { match, variant } of resolved) {
+    if (!match.name || !variant.pattern) continue;
+    if (!requestedPatternsByName.has(match.name)) requestedPatternsByName.set(match.name, new Set());
+    requestedPatternsByName.get(match.name).add(variant.pattern.toLowerCase());
+  }
+  for (const name of phaseNames) {
+    const patterns = data[name]?.buff?.patterns;
+    if (Array.isArray(patterns) && [...requestedPatternsByName.get(name)].every((requested) =>
+      patterns.some((entry) => entry.pattern?.toLowerCase() === requested))) {
+      phasesByName.set(name, { patterns });
+    }
+  }
+  const missingPhaseNames = phaseNames.filter((name) => !phasesByName.has(name));
   let nextPhase = 0;
-  await Promise.all(Array.from({ length: Math.min(PHASE_LOOKUP_CONCURRENCY, phaseNames.length) }, async () => {
-    while (nextPhase < phaseNames.length) {
-      const name = phaseNames[nextPhase++];
+  await Promise.all(Array.from({ length: Math.min(PHASE_LOOKUP_CONCURRENCY, missingPhaseNames.length) }, async () => {
+    while (nextPhase < missingPhaseNames.length) {
+      const name = missingPhaseNames[nextPhase++];
       try {
         phasesByName.set(name, await getJson(`${API}/prices/buff/phases?item=${encodeURIComponent(name)}`, {}, fetchFn));
       } catch (error) {
@@ -413,7 +495,12 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
     }
     else if (match.ambiguous) blocks.push(`<b>${escapeHtml(query)}</b> could mean:\n${match.ambiguous.map((name) => `• ${escapeHtml(name)}`).join('\n')}${match.more ? '\n• …' : ''}\nSend the exact name.`);
     else if (match.needFinish) blocks.push(`<b>${escapeHtml(query)}</b>: which skin finish? For example, <code>AWP The Prince FT</code> or <code>AWP Redline FT</code>.`);
-    else blocks.push(`<b>${escapeHtml(query)}</b>: no matching item found. Include weapon and wear, such as <code>AK-47 | Redline (Field-Tested)</code>.`);
+    else {
+      const suggestions = catalogSuggestionsForText(variant.lookup, 5, names);
+      blocks.push(suggestions.length
+        ? `<b>${escapeHtml(query)}</b>: possible catalogue matches (price not quoted):\n${suggestions.map((name) => `• ${escapeHtml(name)}`).join('\n')}\nSend the intended item to get its price.`
+        : `<b>${escapeHtml(query)}</b>: no matching item found. Try adding a weapon and part of the finish name.`);
+    }
   }
   const messages = [];
   let current = '';

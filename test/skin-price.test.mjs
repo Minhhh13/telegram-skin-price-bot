@@ -100,6 +100,42 @@ test('unique finish words resolve within the named weapon and keep the requested
   assert.ok((await resolveItem('ak neon ft')).ambiguous?.length > 1);
 });
 
+test('Glock-18 names and partial finish words resolve without duplicating the model number', async () => {
+  const twilight = [
+    'Glock-18 | Twilight Galaxy (Factory New)',
+    'Glock-18 | Twilight Galaxy (Minimal Wear)',
+    'Glock-18 | Twilight Galaxy (Field-Tested)',
+  ];
+  for (const query of ['glock twilight', 'glock twilight galaxy', 'glock twil', 'glock galaxy']) {
+    assert.deepEqual(await resolveItem(query), { names: twilight }, query);
+  }
+  assert.deepEqual(await resolveItem('glock gamma doppler fn'), {
+    name: 'Glock-18 | Gamma Doppler (Factory New)',
+  });
+  assert.deepEqual(await resolveItem('glock twilight ww'), { missing: true });
+});
+
+test('partial finish words resolve across weapon types only when the catalogue match is clear', async () => {
+  assert.deepEqual(await resolveItem('ak lot fn'), { name: 'AK-47 | Wild Lotus (Factory New)' });
+  assert.deepEqual(await resolveItem('awp cann ft'), { name: 'AWP | Chrome Cannon (Field-Tested)' });
+  assert.deepEqual(await resolveItem('m4 print ft'), { name: 'M4A1-S | Printstream (Field-Tested)' });
+  assert.deepEqual(await resolveItem('glock twil fn'), { name: 'Glock-18 | Twilight Galaxy (Factory New)' });
+  assert.ok((await resolveItem('ak neon ft')).ambiguous?.length > 1);
+});
+
+test('canonical names with numeric finishes or finish words shared by other categories resolve', async () => {
+  assert.deepEqual(await resolveItem('USP-S | 27 (Factory New)'), {
+    name: 'USP-S | 27 (Factory New)',
+  });
+  assert.deepEqual(await resolveItem('★ Moto Gloves | 3rd Commando Company (Factory New)'), {
+    name: '★ Moto Gloves | 3rd Commando Company (Factory New)',
+  });
+  assert.deepEqual(await resolveItem('moto gloves'), { needFinish: 'motogloves' });
+  assert.deepEqual(await resolveItem('occult glove ft'), {
+    name: '★ Sport Gloves | Occult (Field-Tested)',
+  });
+});
+
 test('M4 shorthand uses the finish to choose A1 or A4 without assuming either', async () => {
   assert.deepEqual(await resolveItem('m4'), { ambiguous: ['M4A1-S', 'M4A4'], more: false });
   assert.deepEqual(await resolveItem('m4 printstream ft'), { name: 'M4A1-S | Printstream (Field-Tested)' });
@@ -288,6 +324,34 @@ test('Gamma Doppler Phase 2 uses the filtered phase listing, including abbreviat
   assert.doesNotMatch(reply, /Minimal Wear/);
   assert.match(reply, /3\.78 → ₫48,571,110   \|   3\.80 → ₫48,828,100/);
   assert.doesNotMatch(reply, /¥8,800\.00 CNY|no matching item found/);
+  assert.equal(calls.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
+});
+
+test('Glock Gamma Doppler Phase 4 quotes the filtered FN listing and labels the assumed wear', async () => {
+  const item = 'Glock-18 | Gamma Doppler (Factory New)';
+  const calls = [];
+  const fetchFn = async (url, options) => {
+    calls.push(url);
+    if (url.endsWith('/prices/batch')) {
+      assert.deepEqual(JSON.parse(options.body).items, [item]);
+      return { ok: true, json: async () => ({ data: { [item]: {
+        buff: { native_currency: { code: 'CNY', ask: 400 }, updated_at: observed },
+      } } }) };
+    }
+    if (url.includes('/prices/buff/phases?')) {
+      assert.equal(new URL(url).searchParams.get('item'), item);
+      return { ok: true, json: async () => ({ patterns: [
+        { pattern: 'Phase 3', native_currency: { code: 'CNY', ask: 509 }, updated_at: observed },
+        { pattern: 'Phase 4', native_currency: { code: 'CNY', ask: 509.5 }, updated_at: observed },
+      ] }) };
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+  const reply = (await buildReply('glock gamma doppler p4', '', fetchFn,
+    Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+  assert.match(reply, /Glock-18 \| Gamma Doppler \(Factory New\) · Phase 4 \(FN assumed\)/);
+  assert.match(reply, /¥509\.50 CNY/);
+  assert.doesNotMatch(reply, /¥400\.00 CNY/);
   assert.equal(calls.filter((url) => url.includes('/prices/buff/phases?')).length, 1);
 });
 

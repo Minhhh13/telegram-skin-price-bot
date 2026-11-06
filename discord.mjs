@@ -44,7 +44,7 @@ export async function lookupDiscord(item, image, geminiKey = '', fetchFn = fetch
   if (item.trim() && !image) {
     direct = await buildReply(item, '', fetchFn);
     if (direct.some((part) => /could mean:/i.test(part))) return splitDiscord(direct.map(discordText).join('\n\n'));
-    const unresolved = direct.some((part) => /no matching item found|could mean:|Send \/price followed by/i.test(part));
+    const unresolved = direct.some((part) => /no matching item found|possible catalogue matches|could mean:|Send \/price followed by/i.test(part));
     if (!unresolved) return splitDiscord(direct.map(discordText).join('\n\n'));
   }
   let aiItems = geminiKey ? await interpretItems({ text: rawText, image, candidates: catalogHintsForText(item), apiKey: geminiKey, fetchFn })
