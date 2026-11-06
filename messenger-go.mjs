@@ -31,6 +31,16 @@ export function startGoMessengerListener(config, dependencies = {}) {
   let nextRequestId = 0;
   let state = 'starting';
 
+  const acknowledge = (messageId) => {
+    if (!child?.stdin?.writable || !messageId) return;
+    child.stdin.write(`${JSON.stringify({ type: 'ack', message_id: messageId })}\n`);
+  };
+  const remember = (messageId) => {
+    handled.add(messageId);
+    if (handled.size > MAX_HANDLED_IDS) handled.delete(handled.values().next().value);
+    acknowledge(messageId);
+  };
+
   const send = (target, content, options = {}) => {
     if (String(target) !== String(config.threadId)) return Promise.reject(new Error('Unapproved Messenger thread'));
     if (!child?.stdin?.writable) return Promise.reject(new Error('Messenger sidecar is offline'));
@@ -62,10 +72,8 @@ export function startGoMessengerListener(config, dependencies = {}) {
       const incoming = pendingEvents.shift();
       const messageId = incoming.messageId;
       const task = answerMessengerMessage(bridge, incoming,
-        { ...config, lookup }).then((answered) => {
-        if (!answered) return;
-        handled.add(messageId);
-        if (handled.size > MAX_HANDLED_IDS) handled.delete(handled.values().next().value);
+        { ...config, lookup }).then(() => {
+        remember(messageId);
       }).catch((error) => {
         console.error('Messenger sidecar reply failed:', error instanceof Error ? error.message : String(error));
       }).finally(() => {
@@ -102,7 +110,8 @@ export function startGoMessengerListener(config, dependencies = {}) {
     }
     if (event.type !== 'message') return;
     const messageId = String(event.message_id || '');
-    if (!messageId || handled.has(messageId) || inFlight.has(messageId)) return;
+    if (!messageId || inFlight.has(messageId)) return;
+    if (handled.has(messageId)) { acknowledge(messageId); return; }
     const incoming = {
       id: messageId,
       messageId,
@@ -114,8 +123,11 @@ export function startGoMessengerListener(config, dependencies = {}) {
       attachments: Array.isArray(event.attachments) ? event.attachments : [],
     };
     if (!Number.isFinite(incoming.timestampMs) || incoming.timestampMs < startedAt ||
-        String(incoming.threadId) !== String(config.threadId) ||
-        !parseMessengerRequest(incoming, accountId, config.threadId)) return;
+        String(incoming.threadId) !== String(config.threadId)) return;
+    if (!parseMessengerRequest(incoming, accountId, config.threadId)) {
+      remember(messageId);
+      return;
+    }
     inFlight.add(messageId);
     pendingEvents.push(incoming);
     drain();

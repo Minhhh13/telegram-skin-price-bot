@@ -69,24 +69,26 @@ export async function answerMessengerMessage(client, event, config, fetchFn = fe
     await client.sendMessage(config.threadId, 'Send !buff followed by skin names, or attach a skin screenshot with !buff as the caption.', options);
     return true;
   }
+  let chunks;
+  let lookupMs = 0;
   try {
     const image = request.hasImage && config.geminiKey ? await firstImage(event, fetchFn) : null;
     if (request.hasImage && !request.text && !image) {
-      await client.sendMessage(config.threadId, 'Photo recognition is unavailable right now. Please type the skin names after !buff.', options);
-      return true;
+      chunks = ['Photo recognition is unavailable right now. Please type the skin names after !buff.'];
+    } else {
+      const lookupStartedAt = Date.now();
+      chunks = await (config.lookup ?? lookupDiscord)(request.text, image, config.geminiKey, fetchFn, event.text);
+      lookupMs = Date.now() - lookupStartedAt;
     }
-    const lookupStartedAt = Date.now();
-    const chunks = await (config.lookup ?? lookupDiscord)(request.text, image, config.geminiKey, fetchFn, event.text);
-    const lookupMs = Date.now() - lookupStartedAt;
-    const sendStartedAt = Date.now();
-    for (const content of chunks) await client.sendMessage(config.threadId, messengerText(content), options);
-    console.log('Messenger request answered', {
-      lookupMs, sendMs: Date.now() - sendStartedAt, chunks: chunks.length,
-    });
   } catch (error) {
     console.error('Messenger lookup failed:', error instanceof Error ? error.message : String(error));
-    await client.sendMessage(config.threadId, 'Price lookup is temporarily unavailable. Please try again shortly.', options);
+    chunks = ['Price lookup is temporarily unavailable. Please try again shortly.'];
   }
+  const sendStartedAt = Date.now();
+  for (const content of chunks) await client.sendMessage(config.threadId, messengerText(content), options);
+  console.log('Messenger request answered', {
+    lookupMs, sendMs: Date.now() - sendStartedAt, chunks: chunks.length,
+  });
   return true;
 }
 

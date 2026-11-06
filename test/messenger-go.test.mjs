@@ -31,14 +31,36 @@ test('Go sidecar routes one approved Messenger request through the shared lookup
   assert.equal(command.thread_id, '456');
   assert.equal(command.reply_to, 'm1');
   assert.match(command.text, /AK-47 \| Redline/);
+  const acknowledgment = once(child.stdin, 'data');
   child.stdout.write(`${JSON.stringify({ type: 'sent', request_id: command.request_id, ok: true })}\n`);
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  const [ackData] = await acknowledgment;
+  assert.deepEqual(JSON.parse(String(ackData)), { type: 'ack', message_id: 'm1' });
 
   child.stdout.write(`${JSON.stringify(event)}\n`);
   child.stdout.write(`${JSON.stringify({ ...event, message_id: 'm2', thread_id: 'other' })}\n`);
   child.stdout.write(`${JSON.stringify({ ...event, message_id: 'old', timestamp_ms: Date.now() - 60_000 })}\n`);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(listener.status().handledMessageCount, 1);
+  await listener.stop();
+});
+
+test('Go sidecar acknowledges ordinary group chatter without looking up a price', async () => {
+  const child = fakeSidecar();
+  let lookups = 0;
+  const listener = startGoMessengerListener({
+    cookies: 'c_user=123; xs=fake; datr=fake', threadId: '456', geminiKey: '',
+  }, {
+    spawn: () => child,
+    lookup: async () => { lookups++; return []; },
+  });
+  const acknowledgment = once(child.stdin, 'data');
+  child.stdout.write(`${JSON.stringify({
+    type: 'message', source: 'snapshot', message_id: 'chatter', thread_id: '456',
+    sender_id: '789', timestamp_ms: Date.now(), text: 'hello team',
+  })}\n`);
+  const [ackData] = await acknowledgment;
+  assert.deepEqual(JSON.parse(String(ackData)), { type: 'ack', message_id: 'chatter' });
+  assert.equal(lookups, 0);
   await listener.stop();
 });
 

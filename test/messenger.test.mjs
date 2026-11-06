@@ -42,6 +42,25 @@ test('messages outside the intended group cause no send', async () => {
   assert.equal(sent.length, 0);
 });
 
+test('Messenger send failure propagates without a second generic reply', async () => {
+  const sent = [];
+  const client = {
+    getUserId: () => accountId,
+    sendMessage: async (_thread, content) => {
+      sent.push(content);
+      throw new Error('temporary send failure');
+    },
+  };
+  await assert.rejects(
+    answerMessengerMessage(client,
+      { threadId, senderId: 'other', messageId: 'retry-message', text: '!buff ak redline ft' },
+      { threadId, lookup: async () => ['**AK-47 | Redline (Field-Tested)**'] }),
+    /temporary send failure/,
+  );
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /AK-47 \| Redline/);
+});
+
 test('Messenger formatting is readable on a phone with a direct BUFF link', () => {
   const reply = messengerText('**BUFF163 base prices · CNY → VND**\n\n**AWP | Redline (Field-Tested)**\n**¥200.48 CNY** · BUFF163 feed ask · [BUFF listing](https://buff.163.com/goods/123)\n`3.75 → ₫751,800   |   3.78 → ₫757,814`\nFeed snapshot 2026-11-05 16:25 UTC (57 min old) ⚠️ May miss newer listings');
   assert.match(reply, /^🎯 BUFF163 PRICE CHECK\n\n◆ AWP \| Redline \(Field-Tested\)/);

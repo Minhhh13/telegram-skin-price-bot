@@ -69,6 +69,7 @@ func (s tableStats) status(state string) output {
 type input struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
+	MessageID string `json:"message_id"`
 	ThreadID  string `json:"thread_id"`
 	Text      string `json:"text"`
 	ReplyTo   string `json:"reply_to"`
@@ -89,42 +90,102 @@ type collector struct {
 	writer      *writer
 	threadID    int64
 	ownID       int64
-	seen        map[string]int64
+	seen        map[string]time.Time
+	acked       map[string]struct{}
+	pending     map[string]*pendingMessage
 	attachments map[string][]attachment
 	mu          sync.Mutex
 	startedAt   time.Time
 }
 
+type pendingMessage struct {
+	event output
+	timer *time.Timer
+}
+
+func (c *collector) ack(id string) {
+	if id == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.acked[id] = struct{}{}
+	delete(c.attachments, id)
+	if pending := c.pending[id]; pending != nil {
+		pending.timer.Stop()
+		delete(c.pending, id)
+	}
+	if len(c.acked) > 2000 {
+		for oldID := range c.acked {
+			delete(c.acked, oldID)
+			break
+		}
+	}
+}
+
+func (c *collector) flush(id string) {
+	c.mu.Lock()
+	pending := c.pending[id]
+	if pending == nil {
+		c.mu.Unlock()
+		return
+	}
+	delete(c.pending, id)
+	if _, alreadyAcked := c.acked[id]; alreadyAcked {
+		c.mu.Unlock()
+		return
+	}
+	pending.timer.Stop()
+	event := pending.event
+	event.Attachments = append([]attachment(nil), c.attachments[id]...)
+	if event.Text == "" && len(event.Attachments) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	c.seen[id] = time.Now()
+	c.mu.Unlock()
+	c.writer.emit(event)
+}
+
 func (c *collector) message(source string, threadID, senderID, timestampMS int64, id, body, mentionIDs string, unsent, admin bool) {
-	if threadID != c.threadID || senderID == c.ownID || id == "" || body == "" || unsent || admin {
+	if threadID != c.threadID || senderID == c.ownID || id == "" || unsent || admin {
 		return
 	}
 	if timestampMS < c.startedAt.UnixMilli() {
 		return
 	}
 	c.mu.Lock()
-	if _, exists := c.seen[id]; exists {
+	if _, exists := c.acked[id]; exists {
 		c.mu.Unlock()
 		return
 	}
-	c.seen[id] = timestampMS
+	if lastEmitted, exists := c.seen[id]; exists && time.Since(lastEmitted) < 90*time.Second {
+		c.mu.Unlock()
+		return
+	}
+	if _, queued := c.pending[id]; queued {
+		c.mu.Unlock()
+		return
+	}
 	attached := append([]attachment(nil), c.attachments[id]...)
+	if body == "" && len(attached) == 0 && source != "socket" {
+		c.mu.Unlock()
+		return
+	}
 	if len(c.seen) > 2000 {
-		cutoff := time.Now().Add(-24 * time.Hour).UnixMilli()
 		for messageID, seenAt := range c.seen {
-			if seenAt < cutoff {
+			if time.Since(seenAt) > 24*time.Hour {
 				delete(c.seen, messageID)
 			}
 		}
 	}
-	c.mu.Unlock()
 	var mentions []mention
 	for _, value := range strings.Split(mentionIDs, ",") {
 		if value != "" {
 			mentions = append(mentions, mention{ID: value})
 		}
 	}
-	c.writer.emit(output{
+	event := output{
 		Type:        "message",
 		Source:      source,
 		MessageID:   id,
@@ -134,7 +195,21 @@ func (c *collector) message(source string, threadID, senderID, timestampMS int64
 		Mentions:    mentions,
 		Attachments: attached,
 		TimestampMS: timestampMS,
-	})
+	}
+	if source == "socket" && len(attached) == 0 {
+		pending := &pendingMessage{event: event}
+		c.pending[id] = pending
+		delay := 750 * time.Millisecond
+		if body == "" {
+			delay = 5 * time.Second
+		}
+		pending.timer = time.AfterFunc(delay, func() { c.flush(id) })
+		c.mu.Unlock()
+		return
+	}
+	c.seen[id] = time.Now()
+	c.mu.Unlock()
+	c.writer.emit(event)
 }
 
 func (c *collector) table(source string, tbl *table.LSTable) tableStats {
@@ -157,10 +232,19 @@ func (c *collector) table(source string, tbl *table.LSTable) tableStats {
 			}
 		}
 		c.attachments[messageID] = append(c.attachments[messageID], attachment{Type: "image", URL: url})
+		_, pending := c.pending[messageID]
 		if len(c.attachments) > 2000 {
-			c.attachments = make(map[string][]attachment)
+			for oldID := range c.attachments {
+				if oldID != messageID {
+					delete(c.attachments, oldID)
+					break
+				}
+			}
 		}
 		c.mu.Unlock()
+		if pending {
+			c.flush(messageID)
+		}
 	}
 	for _, a := range tbl.LSInsertAttachment {
 		if a != nil && a.ThreadKey == c.threadID {
@@ -302,7 +386,9 @@ func main() {
 		writer:      w,
 		threadID:    threadID,
 		ownID:       accountCookies.GetUserID(),
-		seen:        make(map[string]int64),
+		seen:        make(map[string]time.Time),
+		acked:       make(map[string]struct{}),
+		pending:     make(map[string]*pendingMessage),
 		attachments: make(map[string][]attachment),
 		startedAt:   time.UnixMilli(acceptAfterMS),
 	}
@@ -342,6 +428,10 @@ func main() {
 			var request input
 			if err := decoder.Decode(&request); err != nil {
 				return
+			}
+			if request.Type == "ack" {
+				c.ack(request.MessageID)
+				continue
 			}
 			if request.Type != "send" || request.RequestID == "" {
 				continue
