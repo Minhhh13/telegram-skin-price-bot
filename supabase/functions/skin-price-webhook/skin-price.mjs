@@ -47,10 +47,10 @@ export function parseRequest(input, botUsername = '') {
 }
 
 const alias = new Map([
-  ['ak', 'ak47'], ['ak47', 'ak47'], ['m4', 'm4a4'], ['m4a1s', 'm4a1s'], ['m4a4', 'm4a4'], ['m9', 'm9bayonet'],
+  ['ak', 'ak47'], ['ak47', 'ak47'], ['m4', 'm4a4'], ['m1', 'm4a1s'], ['m4a1s', 'm4a1s'], ['m4a4', 'm4a4'], ['m9', 'm9bayonet'],
   ['deagle', 'deserteagle'], ['glock', 'glock18'], ['usp', 'usps'], ['glove', 'gloves'],
   ['butter', 'butterflyknife'], ['btf', 'butterflyknife'], ['talon', 'talonknife'],
-  ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['ouvenir', 'souvenir'], ['dlore', 'dragonlore'],
+  ['awl', 'awp'], ['karmabit', 'karambit'], ['dop', 'doppler'], ['dopp', 'doppler'], ['print', 'printstream'], ['ouvenir', 'souvenir'], ['dlore', 'dragonlore'],
   ['fn', 'factorynew'], ['mw', 'minimalwear'], ['min', 'minimalwear'], ['ft', 'fieldtested'],
   ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'], ['stt', 'stattrak'],
 ]);
@@ -261,12 +261,12 @@ function extractPattern(query) {
   lookup = lookup.trim().replace(/\s{2,}/g, ' ');
   // BUFF lists these gemstones as style filters on Doppler items, not as item names.
   const gemstone = ['Ruby', 'Sapphire', 'Black Pearl', 'Emerald'].includes(pattern);
-  if (gemstone && !/\bdop(?:pler)?\b/i.test(lookup)) {
+  if (gemstone && !/\bdop(?:p|pler)?\b/i.test(lookup)) {
     const knife = normalizedTokens(lookup).some((token) => knifeWeapons.has(token));
     if (knife) lookup += /\bgamma\b/i.test(lookup) ? ' Doppler'
       : pattern === 'Emerald' ? ' Gamma Doppler' : ' Doppler';
   }
-  if (/^Phase [1-4]$/.test(pattern) && !/\bdop(?:pler)?\b/i.test(lookup)) {
+  if (/^Phase [1-4]$/.test(pattern) && !/\bdop(?:p|pler)?\b/i.test(lookup)) {
     if (/\bgamma\b/i.test(lookup)) lookup += ' Doppler';
     else {
       const weapon = normalizedTokens(lookup).find((token) => knifeWeapons.has(token));
@@ -277,7 +277,7 @@ function extractPattern(query) {
     }
   }
   const hasWear = /\b(?:factory\s*new|minimal\s*wear|field\s*tested|well\s*worn|battle\s*scarred|fn|mw|min|ft|ww|bs)\b/i.test(lookup);
-  const assumedFactoryNew = !hasWear && /\b(?:doppler|dop)\b/i.test(lookup);
+  const assumedFactoryNew = !hasWear && /\bdop(?:p|pler)?\b/i.test(lookup);
   if (assumedFactoryNew) lookup += ' Factory New';
   return { lookup, pattern, assumedFactoryNew };
 }

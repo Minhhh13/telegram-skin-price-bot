@@ -329,6 +329,57 @@ test('Butterfly, Flip and Nomad phase requests use the requested Doppler family'
   assert.match(ambiguous, /choose Doppler or Gamma Doppler for Phase 3/);
 });
 
+test('Doppler shorthand selects standard Doppler and preserves every requested phase', async () => {
+  const phaseCalls = [];
+  const fetchFn = async (url, options) => {
+    if (url.endsWith('/prices/batch')) {
+      const names = JSON.parse(options.body).items;
+      return { ok: true, json: async () => ({ data: Object.fromEntries(names.map((name) => [name, {
+        buff: { native_currency: { code: 'CNY', ask: 99 }, updated_at: observed },
+      }])) }) };
+    }
+    if (url.includes('/prices/buff/phases?')) {
+      const name = new URL(url).searchParams.get('item');
+      phaseCalls.push(name);
+      return { ok: true, json: async () => ({ patterns: [1, 2, 3, 4].map((n) => ({
+        pattern: `Phase ${n}`, native_currency: { code: 'CNY', ask: 1000 + n }, updated_at: observed,
+      })) }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const now = Date.parse('2026-11-05T10:30:00Z');
+  const multi = (await buildReply('btf doppler p4\nbtf dopp p3', '', fetchFn, now)).join('\n');
+  assert.match(multi, /Butterfly Knife \| Doppler \(Factory New\) · Phase 4/);
+  assert.match(multi, /Butterfly Knife \| Doppler \(Factory New\) · Phase 3/);
+  assert.match(multi, /¥1,004\.00 CNY/);
+  assert.match(multi, /¥1,003\.00 CNY/);
+  assert.doesNotMatch(multi, /Gamma Doppler|choose Doppler or Gamma Doppler/);
+  assert.deepEqual(phaseCalls, ['★ Butterfly Knife | Doppler (Factory New)']);
+
+  for (const [query, model, phase] of [
+    ['btf dop p3', 'Butterfly Knife', 3],
+    ['butter doppler p4', 'Butterfly Knife', 4],
+    ['flip dop p2', 'Flip Knife', 2],
+    ['m9 dop p1', 'M9 Bayonet', 1],
+    ['btf gamma dop p2', 'Butterfly Knife', 2],
+  ]) {
+    const reply = (await buildReply(query, '', fetchFn, now)).join('\n');
+    const family = query.includes('gamma') ? 'Gamma Doppler' : 'Doppler';
+    assert.ok(reply.includes(`${model} | ${family} (Factory New) · Phase ${phase}`), query);
+    assert.doesNotMatch(reply, /choose Doppler or Gamma Doppler|no matching item found/, query);
+  }
+  const unavailable = (await buildReply('nomad gamma p2', '', fetchFn, now)).join('\n');
+  assert.match(unavailable, /no matching item found/);
+  assert.doesNotMatch(unavailable, /Nomad Knife \| Doppler|¥[\d,]+\.\d{2} CNY/);
+});
+
+test('weapon and finish aliases stay tied to catalog items', async () => {
+  assert.deepEqual(await resolveItem('m1 print ft'), { name: 'M4A1-S | Printstream (Field-Tested)' });
+  assert.deepEqual(await resolveItem('m4 howl ft'), { name: 'M4A4 | Howl (Field-Tested)' });
+  assert.deepEqual(await resolveItem('m9 dop fn'), { name: '★ M9 Bayonet | Doppler (Factory New)' });
+  assert.ok((await resolveItem('print ft')).ambiguous?.length > 1);
+});
+
 test('gemstone style shorthand works for knives beyond M9', async () => {
   const fetchFn = async (url, options) => {
     if (url.endsWith('/prices/batch')) return { ok: true, json: async () => ({ data: {} }) };
