@@ -206,6 +206,30 @@ test('reconnects when the live socket is not ready despite a connected flag', as
   } finally { await listener.stop(); }
 });
 
+test('keeps a fully ready socket connected until the supervisor recycles its worker', async () => {
+  let connections = 0;
+  let disconnects = 0;
+  class ReadyClient extends EventEmitter {
+    get isConnected() { return true; }
+    isFullyReady() { return true; }
+    async connect() {
+      connections++;
+      this.emit('fullyReady');
+      return { user: { id: BigInt(accountId) }, initialData: { threads: [], messages: [] } };
+    }
+    getCookies() { return { c_user: accountId, xs: 'test' }; }
+    async disconnect() { disconnects++; }
+  }
+  const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId },
+    ReadyClient, { retryMs: 5, socketReadyGraceMs: 20 });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    assert.equal(connections, 1, 'a healthy socket must not be interrupted for an inbox snapshot');
+    assert.equal(disconnects, 0);
+    assert.equal(listener.status().connected, true);
+  } finally { await listener.stop(); }
+});
+
 test('live LightSpeed upserts answer rapid target-thread requests once each', async () => {
   const sent = [];
   let client;

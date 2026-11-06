@@ -5,7 +5,6 @@ import { isLikelySkinRequest } from './supabase/functions/skin-price-webhook/ski
 
 const MAX_IMAGE_BYTES = 5_000_000;
 const RETRY_MS = 15_000;
-const SNAPSHOT_REFRESH_MS = 5 * 60_000;
 const SOCKET_READY_GRACE_MS = 90_000;
 const AUTH_RETRY_INITIAL_MS = 60_000;
 const AUTH_RETRY_MAX_MS = 15 * 60_000;
@@ -111,7 +110,6 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
   const pendingReplies = new Set();
   let diagnosticRawEvents = 0;
   let diagnosticPublishes = 0;
-  let liveReadyLogged = false;
 
   const refreshCookies = (active) => {
     try {
@@ -208,12 +206,7 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
           }
         }
       });
-      active.once('fullyReady', () => {
-        if (!liveReadyLogged) {
-          liveReadyLogged = true;
-          console.log('Messenger live event stream fully ready');
-        }
-      });
+      active.on('fullyReady', () => console.log('Messenger live event stream fully ready'));
       active.on('message', (incoming) => handleIncoming(incoming, 'live'));
       active.on('error', (error) => console.error('Messenger connection error:', error?.message || String(error)));
       active.on('disconnected', () => console.warn('Messenger listener disconnected'));
@@ -256,8 +249,12 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
     // Give the socket time to finish its initial database sync before recycling it.
     const connectedForMs = Date.now() - lastConnectedAt;
     const readyGraceMs = intervals.socketReadyGraceMs ?? SOCKET_READY_GRACE_MS;
+    // The supervisor already recycles this worker every 18 minutes to refresh
+    // its inbox snapshot. Do not interrupt a healthy live socket every 5 minutes.
+    const forcedRefreshMs = intervals.snapshotRefreshMs;
     if (!client || (!socketReady() && connectedForMs >= readyGraceMs) ||
-        connectedForMs >= (intervals.snapshotRefreshMs ?? SNAPSHOT_REFRESH_MS)) void connect(true);
+        (Number.isFinite(forcedRefreshMs) && forcedRefreshMs > 0 &&
+          connectedForMs >= forcedRefreshMs)) void connect(true);
   }, intervals.retryMs ?? RETRY_MS);
   return {
     status: () => ({ connected: socketReady(), lastConnectedAt }),
