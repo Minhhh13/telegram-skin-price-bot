@@ -1,10 +1,15 @@
 import { createPublicKey, verify } from 'node:crypto';
 import { aiItemSupportedByText, buildParsedReply, buildReply, catalogHintsForText, floatFilterUnavailable, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
 import { imageFromBytes, interpretItems, requestedRates } from './supabase/functions/skin-price-webhook/gemini.mjs';
+import { candidateComponents, candidateSelectId, selectedCandidate } from './discord-candidates.mjs';
 
 const discordApi = 'https://discord.com/api/v10';
 const customerQuoteButtonId = 'buff:customer-quote';
 const customerQuoteModalId = 'buff:customer-quote:submit';
+const customRateButtonId = 'buff:custom-rate';
+const customRateModalId = 'buff:custom-rate:submit';
+const copyTextButtonId = 'buff:copy-text';
+const copyTextModalId = 'buff:copy-text:submit';
 
 export function verifyDiscord(headers, body, publicKey) {
   const signature = headers.get('x-signature-ed25519') || '';
@@ -75,14 +80,19 @@ export function customerQuotes(content) {
 export function customerQuoteComponents(content) {
   return customerQuotes(content).length ? [{ type: 1, components: [
     { type: 2, style: 2, label: 'Customer quote', custom_id: customerQuoteButtonId },
+    { type: 2, style: 2, label: 'Custom rate', custom_id: customRateButtonId },
   ] }] : [];
 }
 
-function quoteModal(quotes) {
+export function discordReplyComponents(content) {
+  return [...customerQuoteComponents(content), ...candidateComponents(content)];
+}
+
+function quoteModal(quotes, customRate = false) {
   const rates = [...new Set(quotes.flatMap((quote) => quote.rates.map(({ rate }) => rate)))];
   return { type: 9, data: {
-    custom_id: customerQuoteModalId,
-    title: 'Copy customer quote',
+    custom_id: customRate ? customRateModalId : customerQuoteModalId,
+    title: customRate ? 'Custom customer rate' : 'Copy customer quote',
     components: [
       { type: 18, label: 'Item', component: {
         type: 3, custom_id: 'item', placeholder: 'Choose one item', required: true,
@@ -90,7 +100,10 @@ function quoteModal(quotes) {
           label: quote.name.slice(0, 100), value: String(index), default: quotes.length === 1,
         })),
       } },
-      { type: 18, label: 'CNY to VND rate', component: {
+      customRate ? { type: 18, label: 'CNY to VND rate', component: {
+        type: 4, custom_id: 'custom_rate', style: 1, required: true,
+        min_length: 1, max_length: 12, placeholder: '3.72 or 3720 VND per CNY',
+      } } : { type: 18, label: 'CNY to VND rate', component: {
         type: 3, custom_id: 'rate', placeholder: 'Choose one rate', required: true,
         options: rates.slice(0, 25).map((rate) => ({
           label: rate, value: rate, default: rate === '3.65',
@@ -101,25 +114,71 @@ function quoteModal(quotes) {
 }
 
 function modalValue(components, customId) {
-  return components?.find((item) => item?.component?.custom_id === customId)?.component?.values?.[0];
+  const component = components?.find((item) => item?.component?.custom_id === customId)?.component;
+  return component?.values?.[0] ?? component?.value;
 }
 
-function customerQuoteResponse(interaction) {
+function quoteResponse(quote, rate, vnd) {
+  const lines = [quote.name, `BUFF: ${quote.cny}`, `${rate} → ${vnd}`];
+  if (quote.url) lines.push(quote.url);
+  return copyReadyQuote(lines.join('\n'));
+}
+
+function copyReadyQuote(quoteText) {
+  return { type: 4, data: {
+    content: `Copy this quote:\n\`\`\`text\n${quoteText.replaceAll('```', "'''")}\n\`\`\``,
+    flags: 64, allowed_mentions: { parse: [] },
+    components: [{ type: 1, components: [
+      { type: 2, style: 2, label: 'Copy on phone', custom_id: copyTextButtonId },
+    ] }],
+  } };
+}
+
+function quoteTextFromMessage(content) {
+  return String(content || '').match(/^Copy this quote:\n```text\n([\s\S]{1,4000})\n```$/)?.[1] || '';
+}
+
+function copyTextModal(content) {
+  const quoteText = quoteTextFromMessage(content);
+  return quoteText ? { type: 9, data: {
+    custom_id: copyTextModalId, title: 'Copy quote on phone',
+    components: [{ type: 18, label: 'Tap, Select All, then Copy', component: {
+      type: 4, custom_id: 'quote_text', style: 2, value: quoteText,
+      required: false, max_length: 4000,
+    } }],
+  } } : quoteError('That quote is no longer available. Run the price lookup again.');
+}
+
+function quoteError(content) {
+  return { type: 4, data: { content, flags: 64, allowed_mentions: { parse: [] } } };
+}
+
+function customRate(raw) {
+  const input = String(raw ?? '').trim().replaceAll(' ', '');
+  if (!/^(?:\d{1,2}(?:[.,]\d{1,3})?|\d{4,5})$/.test(input)) return null;
+  const perCny = /^\d{4,5}$/.test(input) ? Number(input) : Math.round(Number(input.replace(',', '.')) * 1000);
+  if (perCny < 1000 || perCny > 10000) return null;
+  return { perCny, label: (perCny / 1000).toFixed(perCny % 10 === 0 ? 2 : 3) };
+}
+
+function customerQuoteResponse(interaction, isCustomRate = false) {
   const quotes = customerQuotes(interaction.message?.content);
   const itemIndex = Number(modalValue(interaction.data?.components, 'item'));
   const rate = modalValue(interaction.data?.components, 'rate');
   const quote = Number.isInteger(itemIndex) && itemIndex >= 0 ? quotes[itemIndex] : null;
+  if (!quote) return quoteError('That quote is no longer available. Run the price lookup again.');
+  if (isCustomRate) {
+    const entered = customRate(modalValue(interaction.data?.components, 'custom_rate'));
+    if (!entered) return quoteError('Enter a rate like 3.72 or 3720 VND per CNY (allowed range: 1.00–10.00).');
+    const price = quote.cny.match(/^¥([\d,]+)\.(\d{2}) CNY$/);
+    if (!price) return quoteError('That quote is no longer available. Run the price lookup again.');
+    const cents = Number(price[1].replaceAll(',', '')) * 100 + Number(price[2]);
+    const vnd = `₫${Math.round(cents * entered.perCny / 100).toLocaleString('en-US')}`;
+    return quoteResponse(quote, entered.label, vnd);
+  }
   const conversion = quote?.rates.find((entry) => entry.rate === rate);
-  if (!conversion) return { type: 4, data: {
-    content: 'That quote is no longer available. Run the price lookup again.',
-    flags: 64, allowed_mentions: { parse: [] },
-  } };
-  const lines = [quote.name, `BUFF: ${quote.cny}`, `${rate} → ${conversion.vnd}`];
-  if (quote.url) lines.push(quote.url);
-  return { type: 4, data: {
-    content: `Copy this quote:\n\`\`\`text\n${lines.join('\n').replaceAll('```', "'''")}\n\`\`\``,
-    flags: 64, allowed_mentions: { parse: [] },
-  } };
+  if (!conversion) return quoteError('That quote is no longer available. Run the price lookup again.');
+  return quoteResponse(quote, rate, conversion.vnd);
 }
 
 export async function lookupDiscord(item, image, geminiKey = '', fetchFn = fetch, rawText = item) {
@@ -153,15 +212,56 @@ export function createDiscordHandler({ publicKey, applicationId, guildId, channe
       return { status: 200, body: JSON.stringify({ type: 4, data: { content: 'Use /buff in #buff-botpricer.', flags: 64, allowed_mentions: { parse: [] } } }) };
     }
     if (!applicationId || interaction.application_id !== applicationId) return { status: 401, body: 'Wrong application' };
-    if (interaction.type === 3 && interaction.data?.custom_id === customerQuoteButtonId) {
+    if (interaction.type === 3 && interaction.data?.custom_id === candidateSelectId) {
+      const selected = selectedCandidate(interaction);
+      if (!selected) return { status: 200, body: JSON.stringify(quoteError('Choose an item from this price result.')) };
+      const token = interaction.token;
+      void (async () => {
+        const messages = await lookupDiscord(selected, null, '', fetchFn, selected);
+        for (const [index, content] of messages.entries()) {
+          const url = index === 0 ? `${discordApi}/webhooks/${applicationId}/${token}/messages/@original`
+            : `${discordApi}/webhooks/${applicationId}/${token}`;
+          const components = discordReplyComponents(content);
+          const response = await fetchFn(url, {
+            method: index === 0 ? 'PATCH' : 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ content, allowed_mentions: { parse: [] },
+              ...(components.length ? { components } : {}), ...(index ? { flags: 64 } : {}) }),
+            signal: AbortSignal.timeout(9000),
+          });
+          if (!response.ok) throw new Error(`Discord selected item response HTTP ${response.status}`);
+        }
+      })().catch(async (error) => {
+        console.error('Discord selected item failed:', error instanceof Error ? error.message : String(error));
+        try {
+          await fetchFn(`${discordApi}/webhooks/${applicationId}/${token}/messages/@original`, {
+            method: 'PATCH', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ content: 'Price lookup is temporarily unavailable. Please try again shortly.', allowed_mentions: { parse: [] } }),
+            signal: AbortSignal.timeout(9000),
+          });
+        } catch (sendError) {
+          console.error('Discord selected item error reply failed:', sendError instanceof Error ? sendError.message : String(sendError));
+        }
+      });
+      return { status: 200, body: JSON.stringify({ type: 5, data: { flags: 64 } }) };
+    }
+    if (interaction.type === 3 && [customerQuoteButtonId, customRateButtonId].includes(interaction.data?.custom_id)) {
       const quotes = customerQuotes(interaction.message?.content);
-      const response = quotes.length ? quoteModal(quotes) : { type: 4, data: {
-        content: 'No priced item is available in this message.', flags: 64, allowed_mentions: { parse: [] },
-      } };
+      const response = quotes.length ? quoteModal(quotes, interaction.data.custom_id === customRateButtonId)
+        : quoteError('No priced item is available in this message.');
       return { status: 200, body: JSON.stringify(response) };
     }
-    if (interaction.type === 5 && interaction.data?.custom_id === customerQuoteModalId) {
-      return { status: 200, body: JSON.stringify(customerQuoteResponse(interaction)) };
+    if (interaction.type === 3 && interaction.data?.custom_id === copyTextButtonId) {
+      return { status: 200, body: JSON.stringify(copyTextModal(interaction.message?.content)) };
+    }
+    if (interaction.type === 5 && [customerQuoteModalId, customRateModalId].includes(interaction.data?.custom_id)) {
+      return { status: 200, body: JSON.stringify(customerQuoteResponse(interaction,
+        interaction.data.custom_id === customRateModalId)) };
+    }
+    if (interaction.type === 5 && interaction.data?.custom_id === copyTextModalId) {
+      const text = quoteTextFromMessage(interaction.message?.content);
+      return { status: 200, body: JSON.stringify(text ? copyReadyQuote(text)
+        : quoteError('That quote is no longer available. Run the price lookup again.')) };
     }
     if (interaction.type !== 2 || interaction.data?.name !== 'buff') return { status: 400, body: 'Unsupported interaction' };
     const item = interaction.data?.options?.find((option) => option.name === 'items')?.value || '';
@@ -187,7 +287,7 @@ export function createDiscordHandler({ publicKey, applicationId, guildId, channe
       }
       for (let i = 0; i < messages.length; i++) {
         const url = i === 0 ? `${discordApi}/webhooks/${applicationId}/${token}/messages/@original` : `${discordApi}/webhooks/${applicationId}/${token}`;
-        const components = customerQuoteComponents(messages[i]);
+        const components = discordReplyComponents(messages[i]);
         const response = await fetchFn(url, { method: i === 0 ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: messages[i], flags: 4, allowed_mentions: { parse: [] }, ...(components.length ? { components } : {}) }), signal: AbortSignal.timeout(9000) });
         if (!response.ok) throw new Error(`Discord response HTTP ${response.status}`);
       }

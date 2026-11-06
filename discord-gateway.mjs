@@ -1,5 +1,5 @@
 import { Client, Events, GatewayIntentBits, MessageFlags, Options } from 'discord.js';
-import { customerQuoteComponents, lookupDiscord } from './discord.mjs';
+import { discordReplyComponents, lookupDiscord } from './discord.mjs';
 import { imageFromBytes } from './supabase/functions/skin-price-webhook/gemini.mjs';
 
 export function shouldHandleChannelMessage(message, { guildId, channelId }) {
@@ -33,7 +33,7 @@ export async function answerChannelMessage(message, config, fetchFn = fetch) {
     const chunks = await lookupDiscord(text, image, config.geminiKey, fetchFn, message.content);
     for (const [index, content] of chunks.entries()) {
       const userId = message.author?.id;
-      const components = customerQuoteComponents(content);
+      const components = discordReplyComponents(content);
       const options = {
         content: index === 0 && userId ? `<@${userId}>\n${content}` : content,
         allowedMentions: userId ? { parse: [], users: [userId], repliedUser: true } : { parse: [] },

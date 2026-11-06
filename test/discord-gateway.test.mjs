@@ -43,4 +43,5 @@ test('plain Discord messages are scoped to the dedicated channel and use the sty
   assert.equal(sent[0].enforceNonce, true);
   assert.deepEqual(sent[0].allowedMentions, { parse: [], users: ['123456789012345678'], repliedUser: true });
   assert.equal(sent[0].components[0].components[0].custom_id, 'buff:customer-quote');
+  assert.equal(sent[0].components[0].components[1].custom_id, 'buff:custom-rate');
 });

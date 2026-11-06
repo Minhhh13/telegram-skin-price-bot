@@ -57,6 +57,7 @@ test('only priced Discord replies offer a customer quote button', () => {
     rates: [{ rate: '3.60', vnd: '₫352,800' }, { rate: '3.65', vnd: '₫357,700' }],
   });
   assert.equal(customerQuoteComponents(pricedReply)[0].components[0].label, 'Customer quote');
+  assert.equal(customerQuoteComponents(pricedReply)[0].components[1].label, 'Custom rate');
   assert.deepEqual(customerQuoteComponents('**AK Redline FT**: no matching item found.'), []);
 });
 
@@ -91,6 +92,21 @@ test('customer quote modal copies one item and rate without another API call', a
   assert.equal(response.data.flags, 64);
   assert.equal(response.data.content, 'Copy this quote:\n```text\nDesert Eagle | Kumicho Dragon (Field-Tested)\nBUFF: ¥98.00 CNY\n3.65 → ₫357,700\nhttps://buff.163.com/goods/34432\n```');
   assert.doesNotMatch(response.data.content, /AWP|Feed snapshot|May miss|<@/);
+  assert.equal(response.data.components[0].components[0].custom_id, 'buff:copy-text');
+});
+
+test('mobile copy button opens a modal prefilled with selectable customer quote text', async () => {
+  const handler = createDiscordHandler({ publicKey: publicHex, applicationId: 'app', guildId: 'guild', channelId: 'channel' },
+    async () => { throw new Error('Copying text must not fetch prices'); });
+  const content = 'Copy this quote:\n```text\nDesert Eagle | Kumicho Dragon (Field-Tested)\nBUFF: ¥98.00 CNY\n3.65 → ₫357,700\nhttps://buff.163.com/goods/34432\n```';
+  const button = signed({ type: 3, application_id: 'app', guild_id: 'guild', channel_id: 'channel',
+    data: { custom_id: 'buff:copy-text' }, message: { content } });
+  const modal = JSON.parse((await handler(button.headers, button.body)).body);
+  assert.equal(modal.type, 9);
+  assert.equal(modal.data.components[0].component.type, 4);
+  assert.equal(modal.data.components[0].component.style, 2);
+  assert.equal(modal.data.components[0].component.custom_id, 'quote_text');
+  assert.equal(modal.data.components[0].component.value, 'Desert Eagle | Kumicho Dragon (Field-Tested)\nBUFF: ¥98.00 CNY\n3.65 → ₫357,700\nhttps://buff.163.com/goods/34432');
 });
 
 test('customer quote rejects a rate that was not in the original price reply', async () => {
@@ -102,6 +118,46 @@ test('customer quote rejects a rate that was not in the original price reply', a
     ] }, message: { content: pricedReply } });
   const response = JSON.parse((await handler(submit.headers, submit.body)).body);
   assert.match(response.data.content, /no longer available/);
+});
+
+test('custom rate modal quotes the selected item at a rate absent from the displayed table', async () => {
+  const handler = createDiscordHandler({ publicKey: publicHex, applicationId: 'app', guildId: 'guild', channelId: 'channel' },
+    async () => { throw new Error('Custom quote must not fetch prices'); });
+  const button = signed({ type: 3, application_id: 'app', guild_id: 'guild', channel_id: 'channel',
+    data: { custom_id: 'buff:custom-rate' }, message: { content: pricedReply } });
+  const modal = JSON.parse((await handler(button.headers, button.body)).body);
+  assert.equal(modal.type, 9);
+  assert.equal(modal.data.components[0].component.custom_id, 'item');
+  assert.equal(modal.data.components[0].component.options.length, 2);
+  assert.equal(modal.data.components[1].component.type, 4);
+  assert.equal(modal.data.components[1].component.custom_id, 'custom_rate');
+
+  const submit = signed({ type: 5, application_id: 'app', guild_id: 'guild', channel_id: 'channel',
+    data: { custom_id: modal.data.custom_id, components: [
+      { type: 18, component: { type: 3, custom_id: 'item', values: ['1'] } },
+      { type: 18, component: { type: 4, custom_id: 'custom_rate', value: '3.72' } },
+    ] }, message: { content: pricedReply } });
+  const response = JSON.parse((await handler(submit.headers, submit.body)).body);
+  assert.equal(response.type, 4);
+  assert.equal(response.data.flags, 64);
+  assert.equal(response.data.content, 'Copy this quote:\n```text\nDesert Eagle | Kumicho Dragon (Field-Tested)\nBUFF: ¥98.00 CNY\n3.72 → ₫364,560\nhttps://buff.163.com/goods/34432\n```');
+  assert.doesNotMatch(response.data.content, /AWP|Feed snapshot|May miss|<@/);
+  assert.equal(response.data.components[0].components[0].custom_id, 'buff:copy-text');
+});
+
+test('custom rate rejects malformed or unsafe values without posting a quote', async () => {
+  const handler = createDiscordHandler({ publicKey: publicHex, applicationId: 'app', guildId: 'guild', channelId: 'channel' });
+  for (const value of ['abc', '0', '-3.72', '999999', '3.72<script>']) {
+    const submit = signed({ type: 5, application_id: 'app', guild_id: 'guild', channel_id: 'channel',
+      data: { custom_id: 'buff:custom-rate:submit', components: [
+        { type: 18, component: { type: 3, custom_id: 'item', values: ['1'] } },
+        { type: 18, component: { type: 4, custom_id: 'custom_rate', value } },
+      ] }, message: { content: pricedReply } });
+    const response = JSON.parse((await handler(submit.headers, submit.body)).body);
+    assert.equal(response.type, 4, value);
+    assert.equal(response.data.flags, 64, value);
+    assert.doesNotMatch(response.data.content, /Copy this quote|```/, value);
+  }
 });
 
 test('phase-filtered quote remains identifiable in the customer copy', () => {
@@ -189,4 +245,49 @@ test('Gemini 503 falls back to OpenSkin text lookup and completes the Discord re
   assert.match(message.content, /Redline \(Minimal Wear\)/);
   assert.match(message.content, /Redline \(Field-Tested\)/);
   assert.equal(message.components[0].components[0].custom_id, 'buff:customer-quote');
+  assert.equal(message.components[0].components[1].custom_id, 'buff:custom-rate');
+});
+
+test('selecting an ambiguous catalog candidate prices only that item without Gemini', async () => {
+  let resolvePosted;
+  const posted = new Promise((resolve) => { resolvePosted = resolve; });
+  let priceCalls = 0;
+  let geminiCalls = 0;
+  const fetchFn = async (url, options) => {
+    if (String(url).includes('generativelanguage.googleapis.com')) {
+      geminiCalls++;
+      throw new Error('Candidate selection should not call Gemini');
+    }
+    if (String(url).endsWith('/prices/batch')) {
+      priceCalls++;
+      assert.deepEqual(JSON.parse(options.body).items, ['AK-47 | Redline (Field-Tested)']);
+      return { ok: true, json: async () => ({ data: {
+        'AK-47 | Redline (Field-Tested)': {
+          buff: { native_currency: { code: 'CNY', ask: 160 }, updated_at: new Date().toISOString() },
+          links: { buff: 'https://buff.163.com/goods/12345' },
+        },
+      } }) };
+    }
+    if (String(url).includes('discord.com/api/v10/webhooks/')) {
+      assert.equal(options.method, 'PATCH');
+      resolvePosted(JSON.parse(options.body));
+      return { ok: true };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const handler = createDiscordHandler({ publicKey: publicHex, applicationId: 'app', guildId: 'guild',
+    channelId: 'channel', geminiKey: 'fake-key' }, fetchFn);
+  const content = '**BUFF163 base prices · CNY → VND**\n\n**AK red**: possible catalogue matches (price not quoted):\n• AK-47 | Redline (Field-Tested)\nSend the intended item to get its price.';
+  const selection = signed({ type: 3, application_id: 'app', guild_id: 'guild', channel_id: 'channel',
+    token: 'test-token', data: { custom_id: 'buff:candidate', values: ['0'] }, message: { content } });
+  const acknowledgement = JSON.parse((await handler(selection.headers, selection.body)).body);
+  assert.equal(acknowledgement.type, 5);
+  assert.equal(acknowledgement.data.flags, 64);
+  const message = await posted;
+  assert.equal(priceCalls, 1);
+  assert.equal(geminiCalls, 0);
+  assert.match(message.content, /AK-47 \| Redline \(Field-Tested\)/);
+  assert.match(message.content, /¥160\.00 CNY/);
+  assert.equal(message.components[0].components[0].custom_id, 'buff:customer-quote');
+  assert.equal(message.components[0].components[1].custom_id, 'buff:custom-rate');
 });
