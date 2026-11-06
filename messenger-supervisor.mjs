@@ -1,4 +1,5 @@
 import { fork } from 'node:child_process';
+import { Utils } from 'meta-messenger.js';
 
 const RECYCLE_MS = 18 * 60_000;
 const STOP_GRACE_MS = 10_000;
@@ -19,6 +20,10 @@ export function startMessengerSupervisor(config, dependencies = {}) {
   const restartBaseMs = dependencies.restartBaseMs ?? 1_000;
   const startedAt = now() - 5_000;
   const handledIds = new Set();
+  let cookies = config.cookies;
+  let expectedAccountId = '';
+  try { expectedAccountId = String(Utils.parseCookies(config.cookies).c_user || ''); }
+  catch { /* The listener will report an invalid initial session. */ }
   let worker = null;
   let recycleTimer = null;
   let restartTimer = null;
@@ -52,7 +57,7 @@ export function startMessengerSupervisor(config, dependencies = {}) {
     try {
       const environment = {
         ...process.env,
-        MESSENGER_COOKIES: config.cookies,
+        MESSENGER_COOKIES: cookies,
         MESSENGER_THREAD_ID: config.threadId,
         GEMINI_API_KEY: config.geminiKey || '',
       };
@@ -69,6 +74,15 @@ export function startMessengerSupervisor(config, dependencies = {}) {
         if (message.type === 'handled' && message.id) {
           handledIds.add(String(message.id));
           if (handledIds.size > MAX_HANDLED_IDS) handledIds.delete(handledIds.values().next().value);
+        }
+        if (message.type === 'cookies' && expectedAccountId &&
+            typeof message.cookies === 'string' && message.cookies.length <= 65_536) {
+          try {
+            const updated = Utils.parseCookies(message.cookies);
+            if (Utils.validate(updated) && String(updated.c_user) === expectedAccountId) {
+              cookies = Utils.toCookieString(updated);
+            }
+          } catch { /* Ignore malformed session updates. */ }
         }
       });
       child.on('error', (error) => console.error('Messenger worker error:', error?.message || String(error)));

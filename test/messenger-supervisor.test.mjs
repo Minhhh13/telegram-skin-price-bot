@@ -24,12 +24,13 @@ test('Messenger worker recycles without overlap and retains handled message IDs'
     }
   }
   const supervisor = startMessengerSupervisor(
-    { cookies: 'test-cookie', threadId: 'approved-group', geminiKey: 'test-key' },
+    { cookies: 'c_user=123; xs=old-session', threadId: 'approved-group', geminiKey: 'test-key' },
     {
-      fork: () => {
+      fork: (_path, _args, options) => {
         active++;
         maxActive = Math.max(maxActive, active);
         const child = new FakeChild();
+        child.environment = options.env;
         children.push(child);
         return child;
       },
@@ -40,6 +41,8 @@ test('Messenger worker recycles without overlap and retains handled message IDs'
   );
   try {
     children[0].emit('message', { type: 'handled', id: 'already-sent' });
+    children[0].emit('message', { type: 'cookies', cookies: 'c_user=another-account; xs=wrong' });
+    children[0].emit('message', { type: 'cookies', cookies: 'c_user=123' });
     for (let attempt = 0; attempt < 40 && children.length < 2; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
@@ -48,6 +51,13 @@ test('Messenger worker recycles without overlap and retains handled message IDs'
     assert.ok(children[0].messages.some((message) => message.type === 'stop'));
     assert.ok(children[1].messages[0].recentMessageIds.includes('already-sent'));
     assert.equal(children[1].messages[0].startedAt, children[0].messages[0].startedAt);
+    assert.equal(children[1].environment.MESSENGER_COOKIES, 'c_user=123; xs=old-session');
+    children[1].emit('message', { type: 'cookies', cookies: 'c_user=123; xs=refreshed-session' });
+    for (let attempt = 0; attempt < 40 && children.length < 3; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(children.length >= 3);
+    assert.equal(children[2].environment.MESSENGER_COOKIES, 'c_user=123; xs=refreshed-session');
   } finally {
     await supervisor.stop();
   }
@@ -61,7 +71,7 @@ test('stopping before a failed worker restart prevents another spawn', async () 
     kill(signal) { this.emit('exit', null, signal); }
   }
   const supervisor = startMessengerSupervisor(
-    { cookies: 'test-cookie', threadId: 'approved-group' },
+    { cookies: 'c_user=123; xs=old-session', threadId: 'approved-group' },
     { fork: () => { const child = new FakeChild(); children.push(child); return child; }, restartBaseMs: 15 },
   );
   children[0].emit('exit', 1, null);

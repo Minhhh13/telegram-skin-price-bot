@@ -14,7 +14,7 @@ export function parseMessengerRequest(event, accountId, threadId) {
   const command = raw.match(/^!buff\b\s*[:,-]?\s*/i);
   if (command) return { text: raw.slice(command[0].length).trim(), hasImage: Boolean(event.attachments?.length) };
   const mentioned = event.mentions?.some((mention) => String(mention.id ?? mention.userId) === String(accountId));
-  const tag = raw.match(/@Thang\s*Manh\s*Nguyen\b/i);
+  const tag = raw.match(/@(?:Thang\s*Manh\s*Nguyen|BUFF\s*BOT\s*PRICE\s*CHECKER)\b/i);
   if (!mentioned && !tag) return null;
   const text = raw.replace(/@BUFF\s*BOT\s*PRICE\s*CHECKER\b/ig, '')
     .replace(/@Thang\s*Manh\s*Nguyen\b/ig, '').replace(/^[\s,:-]+|[\s,:-]+$/g, '').trim();
@@ -25,10 +25,10 @@ export function parseMessengerRequest(event, accountId, threadId) {
 export function messengerText(markdown) {
   return String(markdown).split('\n').map((line) => {
     if (/^\*\*BUFF163 base prices · CNY → VND\*\*$/.test(line)) return '🎯 BUFF163 PRICE CHECK';
+    const quote = line.match(/^\*\*(¥[\d,.]+ CNY)\*\*(?: · BUFF163 .+?)?(?: · \[BUFF (?:listing|item \(select [^)]+\))\]\((https:\/\/buff\.163\.com\/goods\/\d+)\))?$/);
+    if (quote) return `💴 ${quote[1]}${quote[2] ? `\n🔗 ${quote[2]}` : ''}`;
     const heading = line.match(/^\*\*(.+)\*\*$/);
     if (heading) return `◆ ${heading[1]}`;
-    const quote = line.match(/^\*\*(¥[\d,.]+ CNY)\*\* · BUFF163 (.+?) · \[BUFF (?:listing|item \(select [^)]+\))\]\(https:\/\/buff\.163\.com\/goods\/(\d+)\)$/);
-    if (quote) return `💴 ${quote[1]} · BUFF ${quote[2]}\n🔗 https://buff.163.com/goods/${quote[3]}`;
     if (/^`[\d.]+ → ₫/.test(line)) return line.replace(/^`|`$/g, '').split(/\s+\|\s+/).map((rate) => `   ${rate.trim()}`).join('\n');
     const snapshot = line.match(/^Feed snapshot (\S+) (\S+) UTC \(([^)]+)\)(?: ⚠️ .*)?$/);
     if (snapshot) return `🕒 Feed ${snapshot[3]} · ${snapshot[2]} UTC${line.includes('⚠️') ? '\n⚠️ May miss newer listings' : ''}`;
@@ -69,7 +69,7 @@ export async function answerMessengerMessage(client, event, config, fetchFn = fe
       return true;
     }
     const lookupStartedAt = Date.now();
-    const chunks = await lookupDiscord(request.text, image, config.geminiKey, fetchFn, event.text);
+    const chunks = await (config.lookup ?? lookupDiscord)(request.text, image, config.geminiKey, fetchFn, event.text);
     const lookupMs = Date.now() - lookupStartedAt;
     const sendStartedAt = Date.now();
     for (const content of chunks) await client.sendMessage(config.threadId, messengerText(content), options);
@@ -95,12 +95,27 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
   let lastConnectedAt = 0;
   let accountId = '';
   let cookies = null;
+  let lastPublishedCookies = '';
   const startedAt = Number.isFinite(config.startedAt) ? config.startedAt : Date.now();
   const seenMessages = new Set((config.recentMessageIds || []).map(String));
   const inFlight = new Set();
   const pendingReplies = new Set();
   let diagnosticRawEvents = 0;
+  let diagnosticPublishes = 0;
   let liveReadyLogged = false;
+
+  const refreshCookies = (active) => {
+    try {
+      const updated = active.getCookies();
+      if (!Utils.validate(updated) || String(updated.c_user) !== String(accountId)) return;
+      cookies = updated;
+      const serialized = Utils.toCookieString(updated);
+      if (serialized !== lastPublishedCookies) {
+        config.onCookiesUpdated?.(serialized);
+        lastPublishedCookies = serialized;
+      }
+    } catch { /* Keep the last valid session. */ }
+  };
 
   const handleIncoming = (incoming, source) => {
     const event = { ...incoming, messageId: incoming.id, timestamp: Number(incoming.timestampMs) };
@@ -137,8 +152,9 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
     connecting = true;
     try {
       if (!cookies) cookies = Utils.parseCookies(config.cookies);
+      if (!accountId) accountId = String(cookies.c_user ?? '');
       if (client) {
-        try { cookies = client.getCookies(); } catch { /* Keep the last valid cookies. */ }
+        refreshCookies(client);
         await client.disconnect().catch(() => {});
       }
       const active = new ClientClass(cookies, {
@@ -147,6 +163,40 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
       client = active;
       active.on('raw', (event) => {
         if (diagnosticRawEvents++ < 12) console.log('Messenger raw event type', event.from, event.type);
+        if (event?.from !== 'lightspeed' || event.type !== 'Event_PublishResponse') return;
+        const table = event.data?.Table ?? event.data?.table;
+        if (!table) {
+          if (diagnosticPublishes++ < 3) console.log('Messenger publish table missing');
+          return;
+        }
+        const inserts = table.LSInsertMessage ?? table.lsInsertMessage;
+        const upserts = table.LSUpsertMessage ?? table.lsUpsertMessage;
+        const targetRows = (rows) => rows.filter((row) => row &&
+          String(row.ThreadKey ?? row.threadKey ?? row.thread_key) === String(config.threadId));
+        const targetInserts = targetRows(Array.isArray(inserts) ? inserts : []);
+        const targetUpserts = targetRows(Array.isArray(upserts) ? upserts : []);
+        if (diagnosticPublishes++ < 3 || targetInserts.length || targetUpserts.length) {
+          console.log('Messenger publish message counts', {
+            totalInserts: Array.isArray(inserts) ? inserts.length : 0,
+            totalUpserts: Array.isArray(upserts) ? upserts.length : 0,
+            insertCount: targetInserts.length, upsertCount: targetUpserts.length,
+          });
+        }
+        for (const row of [...targetInserts, ...targetUpserts]
+          .sort((a, b) => Number(a.TimestampMs ?? a.timestampMs) - Number(b.TimestampMs ?? b.timestampMs))) {
+          const incoming = {
+            id: row.MessageId ?? row.messageId ?? row.message_id,
+            threadId: row.ThreadKey ?? row.threadKey ?? row.thread_key,
+            senderId: row.SenderId ?? row.senderId ?? row.sender_id,
+            text: row.Text ?? row.text ?? '',
+            timestampMs: row.TimestampMs ?? row.timestampMs ?? row.timestamp_ms,
+          };
+          // The raw table does not include image attachment data. Let the normal
+          // message/snapshot path handle image-only requests instead.
+          if (parseMessengerRequest(incoming, accountId, config.threadId)?.text) {
+            handleIncoming(incoming, 'live-table');
+          }
+        }
       });
       active.once('fullyReady', () => {
         if (!liveReadyLogged) {
@@ -160,6 +210,7 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
       const { user, initialData } = await active.connect();
       if (stopped) { await active.disconnect(); return; }
       accountId = user.id;
+      refreshCookies(active);
       lastConnectedAt = Date.now();
       for (const message of [...initialData.messages]
         .filter((item) => String(item.threadId) === String(config.threadId))
@@ -188,6 +239,7 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
       stopped = true;
       clearInterval(retryTimer);
       await Promise.allSettled([...pendingReplies]);
+      if (client) refreshCookies(client);
       await client?.disconnect().catch(() => {});
     },
   };

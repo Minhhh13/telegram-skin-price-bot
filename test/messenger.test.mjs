@@ -12,6 +12,8 @@ test('only !buff and actual account mentions in the intended group trigger a loo
     { text: 'awp long dog ft', hasImage: false });
   assert.deepEqual(parseMessengerRequest({ ...base, text: '@BUFF BOT PRICE CHECKER awp redline', mentions: [{ id: accountId }] }, accountId, threadId),
     { text: 'awp redline', hasImage: false });
+  assert.deepEqual(parseMessengerRequest({ ...base, text: '@BUFF BOT PRICE CHECKER ak bthemonster mw' }, accountId, threadId),
+    { text: 'ak bthemonster mw', hasImage: false });
   assert.deepEqual(parseMessengerRequest({ ...base, text: '@Thang Manh Nguyen ak slate' }, accountId, threadId),
     { text: 'ak slate', hasImage: false });
   assert.deepEqual(parseMessengerRequest({ ...base, text: '@Thang Manh Nguyen stt printstream ft' }, accountId, threadId),
@@ -43,7 +45,8 @@ test('messages outside the intended group cause no send', async () => {
 test('Messenger formatting is readable on a phone with a direct BUFF link', () => {
   const reply = messengerText('**BUFF163 base prices · CNY → VND**\n\n**AWP | Redline (Field-Tested)**\n**¥200.48 CNY** · BUFF163 feed ask · [BUFF listing](https://buff.163.com/goods/123)\n`3.75 → ₫751,800   |   3.78 → ₫757,814`\nFeed snapshot 2026-11-05 16:25 UTC (57 min old) ⚠️ May miss newer listings');
   assert.match(reply, /^🎯 BUFF163 PRICE CHECK\n\n◆ AWP \| Redline \(Field-Tested\)/);
-  assert.match(reply, /💴 ¥200\.48 CNY · BUFF feed ask\n🔗 https:\/\/buff\.163\.com\/goods\/123/);
+  assert.match(reply, /💴 ¥200\.48 CNY\n🔗 https:\/\/buff\.163\.com\/goods\/123/);
+  assert.doesNotMatch(reply, /feed ask/);
   assert.match(reply, /3\.75 → ₫751,800\n   3\.78 → ₫757,814/);
   assert.match(reply, /🕒 Feed 57 min old · 16:25 UTC/);
   assert.match(reply, /⚠️ May miss newer listings/);
@@ -52,6 +55,7 @@ test('Messenger formatting is readable on a phone with a direct BUFF link', () =
 
 test('inbox refresh answers one new group request and ignores old or duplicate messages', async () => {
   const sent = [];
+  const cookieUpdates = [];
   let connections = 0;
   class FakeClient extends EventEmitter {
     connected = false;
@@ -65,17 +69,19 @@ test('inbox refresh answers one new group request and ignores old or duplicate m
         ...(connections > 1 ? [{ id: 'fresh', threadId: BigInt(threadId), senderId: 999n, text: '!buff', timestampMs }] : []),
       ] } };
     }
-    getCookies() { return { c_user: accountId, xs: 'test' }; }
+    getCookies() { return { c_user: accountId, xs: 'refreshed-session' }; }
     async disconnect() { this.connected = false; }
     async sendMessage(id, payload) { sent.push({ id, payload }); }
   }
-  const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId }, FakeClient,
+  const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId,
+    onCookiesUpdated: (cookies) => cookieUpdates.push(cookies) }, FakeClient,
     { retryMs: 10, snapshotRefreshMs: 20 });
   try {
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.ok(connections >= 2);
     assert.equal(sent.length, 1);
     assert.match(sent[0].payload.text, /Send !buff followed by skin names/);
+    assert.deepEqual(cookieUpdates, [`c_user=${accountId}; xs=refreshed-session`]);
   } finally { listener.stop(); }
 });
 
@@ -154,5 +160,42 @@ test('failed Messenger send is retried from the next inbox snapshot', async () =
     await new Promise((resolve) => setTimeout(resolve, 90));
     assert.equal(sends, 2);
     assert.deepEqual(handled, ['retry-this']);
+  } finally { await listener.stop(); }
+});
+
+test('live LightSpeed upserts answer only target-thread requests once', async () => {
+  const sent = [];
+  let client;
+  class FakeClient extends EventEmitter {
+    connected = false;
+    get isConnected() { return this.connected; }
+    async connect() {
+      client = this;
+      this.connected = true;
+      return { user: { id: BigInt(accountId) }, initialData: { threads: [], messages: [] } };
+    }
+    getCookies() { return { c_user: accountId, xs: 'test' }; }
+    async disconnect() { this.connected = false; }
+    async sendMessage(id, payload) { sent.push({ id, payload }); }
+  }
+  const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId,
+    lookup: async () => ['Price check result'] },
+    FakeClient, { retryMs: 100_000, snapshotRefreshMs: 100_000 });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const timestampMs = BigInt(Date.now());
+    const other = { MessageId: 'competitor-1', ThreadKey: 888n, SenderId: 999n,
+      Text: '!buff', TimestampMs: timestampMs };
+    const upsert = { MessageId: 'target-1', ThreadKey: BigInt(threadId), SenderId: 999n,
+      Text: '!buff awp redline ft', TimestampMs: timestampMs };
+    client.emit('raw', { from: 'lightspeed', type: 'Event_PublishResponse', data: {
+      Table: { LSUpsertMessage: [other, upsert] },
+    } });
+    client.emit('message', { id: upsert.MessageId, threadId: upsert.ThreadKey,
+      senderId: upsert.SenderId, text: upsert.Text, timestampMs });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].id, BigInt(threadId));
+    assert.doesNotMatch(sent[0].payload.text, /competitor/);
   } finally { await listener.stop(); }
 });

@@ -28,6 +28,9 @@ process.on('message', (message) => {
     onMessageHandled: (id) => {
       if (process.connected && process.send && id) process.send({ type: 'handled', id: String(id) });
     },
+    onCookiesUpdated: (cookies) => {
+      if (process.connected && process.send) process.send({ type: 'cookies', cookies });
+    },
   });
   readyTimer = setInterval(() => {
     if (!listener?.status().connected) return;

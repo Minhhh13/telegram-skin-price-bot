@@ -272,7 +272,7 @@ function formatQuote(name, result, rates, now) {
   const lines = [`<b>${escapeHtml(name)}</b>`];
   if (result.phasePattern) lines.push(`Style filter: <b>${escapeHtml(result.phasePattern)}</b>`);
   else if (/\bdoppler\b/i.test(name)) lines.push('Style filter: All styles (unfiltered)');
-  lines.push(`<b>¥${ask.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY</b> · BUFF163 ${result.phasePattern ? `${escapeHtml(result.phasePattern)} ` : ''}feed ask${source}`);
+  lines.push(`<b>¥${ask.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY</b>${source}`);
   for (let i = 0; i < rates.length; i += 2) {
     lines.push(`<code>${rates.slice(i, i + 2).map((rate) => `${formatRate(rate)} → ₫${vnd(ask, rate)}`).join('   |   ')}</code>`);
   }

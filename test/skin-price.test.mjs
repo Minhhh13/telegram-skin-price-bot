@@ -250,7 +250,8 @@ test('Gamma Doppler Phase 2 uses the filtered phase listing, including abbreviat
   const reply = (await buildReply('karmabit gamma dop phase 2', '', fetchFn, Date.parse('2026-11-05T10:30:00Z'))).join('\n');
   assert.match(reply, /Karambit \| Gamma Doppler \(Factory New\) · Phase 2/);
   assert.match(reply, /¥12,849\.50 CNY/);
-  assert.match(reply, /Phase 2 feed ask/);
+  assert.match(reply, /Style filter: <b>Phase 2<\/b>/);
+  assert.doesNotMatch(reply, /feed ask/);
   assert.doesNotMatch(reply, /Minimal Wear/);
   assert.match(reply, /3\.78 → ₫48,571,110   \|   3\.80 → ₫48,828,100/);
   assert.doesNotMatch(reply, /¥8,800\.00 CNY|no matching item found/);
