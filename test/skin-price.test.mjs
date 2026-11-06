@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { aiItemSupportedByText, buildReply, catalogHintsForText, escapeHtml, isLikelySkinRequest, parseRequest, resolveItem, shouldReply } from '../supabase/functions/skin-price-webhook/skin-price.mjs';
 import { createHandler } from '../supabase/functions/skin-price-webhook/handler.mjs';
 import { lookupDiscord } from '../discord.mjs';
+import { itemNames } from '../supabase/functions/skin-price-webhook/catalog.mjs';
 
 const catalog = [
   { name: 'AK-47 | Redline (Field-Tested)', is_stattrak: false, is_souvenir: false },
@@ -281,6 +282,70 @@ test('butter gamma p1 fn resolves Butterfly Knife Gamma Doppler Phase 1', async 
     assert.match(reply, /¥12,000\.00 CNY/, query);
     assert.doesNotMatch(reply, /¥9,000\.00 CNY|no matching item found/, query);
   }
+});
+
+test('every catalogued knife Doppler family resolves from its short model name', async () => {
+  const variants = itemNames.filter((name) => /^★ (?!StatTrak).* \| (?:Gamma )?Doppler \(Factory New\)$/.test(name));
+  assert.ok(variants.length >= 25);
+  for (const name of variants) {
+    const [model, finish] = name.slice(2).split(' | ');
+    const shortModel = model === 'M9 Bayonet' ? 'M9' : model.replace(/ Knife$/, '');
+    const query = `${shortModel} ${finish.replace(/ \(Factory New\)$/, '')} fn`;
+    assert.deepEqual(await resolveItem(query, undefined, [name]), { name }, query);
+  }
+});
+
+test('Butterfly, Flip and Nomad phase requests use the requested Doppler family', async () => {
+  const calls = [];
+  const fetchFn = async (url, options) => {
+    if (url.endsWith('/prices/batch')) {
+      const names = JSON.parse(options.body).items;
+      return { ok: true, json: async () => ({ data: Object.fromEntries(names.map((name) => [name, {
+        buff: { native_currency: { code: 'CNY', ask: 100 }, updated_at: observed },
+      }])) }) };
+    }
+    if (url.includes('/prices/buff/phases?')) {
+      const name = new URL(url).searchParams.get('item');
+      calls.push(name);
+      return { ok: true, json: async () => ({ patterns: [{ pattern: 'Phase 3',
+        native_currency: { code: 'CNY', ask: name.includes('Gamma') ? 300 : 200 }, updated_at: observed,
+      }] }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const reply = (await buildReply(
+    'Butterfly doppler phase 3; Butterfly gamma doppler phase 3; Flip doppler phase 3; Nomad phase 3',
+    '', fetchFn, Date.parse('2026-11-05T10:30:00Z'),
+  )).join('\n');
+  for (const label of ['Butterfly Knife | Doppler', 'Butterfly Knife | Gamma Doppler',
+    'Flip Knife | Doppler', 'Nomad Knife | Doppler']) {
+    assert.match(reply, new RegExp(`${label.replace('|', '\\|')} \\(Factory New\\) · Phase 3`));
+  }
+  assert.equal(calls.length, 4);
+  assert.match(reply, /¥200\.00 CNY/);
+  assert.match(reply, /¥300\.00 CNY/);
+  const ambiguous = (await buildReply('Butterfly phase 3', '',
+    () => { throw new Error('No price request is needed for an ambiguous family'); })).join('\n');
+  assert.match(ambiguous, /choose Doppler or Gamma Doppler for Phase 3/);
+});
+
+test('gemstone style shorthand works for knives beyond M9', async () => {
+  const fetchFn = async (url, options) => {
+    if (url.endsWith('/prices/batch')) return { ok: true, json: async () => ({ data: {} }) };
+    if (url.includes('/prices/buff/phases?')) {
+      const name = new URL(url).searchParams.get('item');
+      return { ok: true, json: async () => ({ patterns: [{
+        pattern: name.includes('Gamma') ? 'Emerald' : 'Ruby',
+        native_currency: { code: 'CNY', ask: 1000 }, updated_at: observed,
+      }] }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const reply = (await buildReply('Butterfly ruby; Flip emerald', '', fetchFn,
+    Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+  assert.match(reply, /Butterfly Knife \| Doppler \(Factory New\) · Ruby/);
+  assert.match(reply, /Flip Knife \| Gamma Doppler \(Factory New\) · Emerald/);
+  assert.doesNotMatch(reply, /no matching item found|listing unavailable/);
 });
 
 test('Talon shorthand and min wear preserve the Ruby style and wear', async () => {

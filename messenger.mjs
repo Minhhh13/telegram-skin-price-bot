@@ -6,6 +6,12 @@ import { isLikelySkinRequest } from './supabase/functions/skin-price-webhook/ski
 const MAX_IMAGE_BYTES = 5_000_000;
 const RETRY_MS = 15_000;
 const SNAPSHOT_REFRESH_MS = 30_000;
+const AUTH_RETRY_INITIAL_MS = 60_000;
+const AUTH_RETRY_MAX_MS = 15 * 60_000;
+
+function invalidSession(error) {
+  return /access token is no longer valid|user id in initial data is zero/i.test(error instanceof Error ? error.message : String(error));
+}
 
 export function parseMessengerRequest(event, accountId, threadId) {
   if (!threadId || String(event?.threadId) !== String(threadId) ||
@@ -93,6 +99,8 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
   let stopped = false;
   let retryTimer = null;
   let lastConnectedAt = 0;
+  let nextConnectAt = 0;
+  let authRetryDelayMs = intervals.authRetryInitialMs ?? AUTH_RETRY_INITIAL_MS;
   let accountId = '';
   let cookies = null;
   let lastPublishedCookies = '';
@@ -148,7 +156,8 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
   };
 
   const connect = async (refresh = false) => {
-    if (connecting || stopped || pendingReplies.size || (client?.isConnected && !refresh)) return;
+    if (connecting || stopped || pendingReplies.size || Date.now() < nextConnectAt ||
+        (client?.isConnected && !refresh)) return;
     connecting = true;
     try {
       if (!cookies) cookies = Utils.parseCookies(config.cookies);
@@ -210,6 +219,8 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
       const { user, initialData } = await active.connect();
       if (stopped) { await active.disconnect(); return; }
       accountId = user.id;
+      nextConnectAt = 0;
+      authRetryDelayMs = intervals.authRetryInitialMs ?? AUTH_RETRY_INITIAL_MS;
       refreshCookies(active);
       lastConnectedAt = Date.now();
       for (const message of [...initialData.messages]
@@ -224,6 +235,13 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
       });
     } catch (error) {
       console.error('Messenger listener connection failed:', error instanceof Error ? error.message : String(error));
+      if (invalidSession(error)) {
+        const maxDelay = intervals.authRetryMaxMs ?? AUTH_RETRY_MAX_MS;
+        const delayMs = Math.min(authRetryDelayMs, maxDelay);
+        nextConnectAt = Date.now() + delayMs;
+        authRetryDelayMs = Math.min(delayMs * 2, maxDelay);
+        console.warn('Messenger session invalid; waiting before retry', { retryDelayMs: delayMs });
+      }
       try { await client?.disconnect(); } catch { /* A failed handshake may not have a socket yet. */ }
       client = null;
     } finally { connecting = false; }

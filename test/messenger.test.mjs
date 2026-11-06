@@ -163,6 +163,24 @@ test('failed Messenger send is retried from the next inbox snapshot', async () =
   } finally { await listener.stop(); }
 });
 
+test('invalid Messenger session backs off instead of retrying every tick', async () => {
+  let attempts = 0;
+  class InvalidSessionClient extends EventEmitter {
+    get isConnected() { return false; }
+    async connect() {
+      attempts++;
+      throw new Error('failed to load inbox: access token is no longer valid: user id in initial data is zero');
+    }
+    async disconnect() {}
+  }
+  const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=expired`, threadId },
+    InvalidSessionClient, { retryMs: 5, authRetryInitialMs: 1_000 });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(attempts, 1, 'do not retry an invalid session on each timer tick');
+  } finally { await listener.stop(); }
+});
+
 test('live LightSpeed upserts answer rapid target-thread requests once each', async () => {
   const sent = [];
   let client;

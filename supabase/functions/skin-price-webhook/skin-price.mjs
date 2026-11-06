@@ -55,17 +55,30 @@ const alias = new Map([
   ['ww', 'wellworn'], ['bs', 'battlescarred'], ['st', 'stattrak'], ['stt', 'stattrak'],
 ]);
 
+// Derive knife names from the catalogue so shorthand works for every model,
+// including Flip, Nomad and future additions. Match full names before tokens.
+const knifeTypes = [...new Set(itemNames.filter((name) => name.includes('|')).map((name) =>
+  name.split('|')[0].replace(/^★\s*(?:StatTrak™\s*)?/, '').trim()).filter((name) =>
+  /(?:Knife|Bayonet|Karambit|Daggers)$/.test(name)))].sort((a, b) => b.length - a.length);
+const knifePhrases = knifeTypes.filter((name) => /\s/.test(name)).map((name) => ({
+  pattern: new RegExp(`\\b${name.toLowerCase().split(/\s+/).join('\\s+')}\\b`, 'g'),
+  token: name.toLowerCase().replace(/[^a-z0-9]/g, ''),
+}));
+const knifeWeapons = new Set(knifeTypes.map((name) => name.toLowerCase().replace(/[^a-z0-9]/g, '')));
+for (const name of knifeTypes) {
+  if (name.endsWith(' Knife')) alias.set(name.slice(0, -6).toLowerCase(),
+    name.toLowerCase().replace(/[^a-z0-9]/g, ''));
+}
+
 function normalizedTokens(value) {
   let cleaned = value.toLowerCase().replaceAll('stat trak', 'stattrak').replaceAll('stat-trak', 'stattrak');
   cleaned = cleaned.replace(/field[\s-]*tested/g, ' fieldtested ').replace(/factory[\s-]*new/g, ' factorynew ')
-    .replace(/\bm9\s*bayonet\b/g, ' m9 ')
-    .replace(/\btalon\s+knife\b/g, ' talonknife ')
-    .replace(/\bbutterfly\s+knife\b/g, ' butterflyknife ')
     .replace(/\busp[\s-]*s\b/g, ' usps ')
     .replace(/dragon[\s-]*lore/g, ' dragon lore ').replace(/long[\s-]*dog/g, ' longdog ')
     .replace(/minimal[\s-]*wear/g, ' minimalwear ').replace(/well[\s-]*worn/g, ' wellworn ')
     .replace(/battle[\s-]*scarred/g, ' battlescarred ').replace(/m4a1[\s-]*s/g, ' m4a1s ')
     .replace(/ak[\s-]*47/g, ' ak47 ');
+  for (const { pattern, token } of knifePhrases) cleaned = cleaned.replace(pattern, ` ${token} `);
   return cleaned.split(/[^a-z0-9]+/).filter(Boolean).map((v) => alias.get(v) || v);
 }
 
@@ -83,6 +96,13 @@ function entryFor(name) {
     wear: tokens.find((token) => wears.has(token)) || '', souvenir: tokens.includes('souvenir'), stattrak: tokens.includes('stattrak') };
 }
 const catalog = itemNames.map(entryFor);
+const dopplerFamiliesByKnife = new Map();
+for (const entry of catalog) {
+  if (!knifeWeapons.has(entry.weapon) || entry.wear !== 'factorynew' || entry.stattrak || entry.souvenir ||
+      !['doppler', 'gammadoppler'].includes(entry.finish)) continue;
+  if (!dopplerFamiliesByKnife.has(entry.weapon)) dopplerFamiliesByKnife.set(entry.weapon, new Set());
+  dopplerFamiliesByKnife.get(entry.weapon).add(entry.finish);
+}
 const catalogCueTokens = new Set(catalog.flatMap((entry) => entry.tokens.filter((token) =>
   token.length >= 4 && !ignored.has(token) && !special.has(token))));
 
@@ -241,12 +261,20 @@ function extractPattern(query) {
   lookup = lookup.trim().replace(/\s{2,}/g, ' ');
   // BUFF lists these gemstones as style filters on Doppler items, not as item names.
   const gemstone = ['Ruby', 'Sapphire', 'Black Pearl', 'Emerald'].includes(pattern);
-  if (gemstone && /\b(?:m9|m9\s*bayonet)\b/i.test(lookup) && !/\bdop(?:pler)?\b/i.test(lookup)) {
-    lookup += pattern === 'Emerald' ? ' Gamma Doppler' : ' Doppler';
-  } else if (/^Phase [1-4]$/.test(pattern) && /\bgamma\b/i.test(lookup) && !/\bdop(?:pler)?\b/i.test(lookup)) {
-    lookup += ' Doppler';
-  } else if (pattern === 'Emerald' && /\bgamma\b/i.test(lookup) && !/\bdop(?:pler)?\b/i.test(lookup)) {
-    lookup += ' Doppler';
+  if (gemstone && !/\bdop(?:pler)?\b/i.test(lookup)) {
+    const knife = normalizedTokens(lookup).some((token) => knifeWeapons.has(token));
+    if (knife) lookup += /\bgamma\b/i.test(lookup) ? ' Doppler'
+      : pattern === 'Emerald' ? ' Gamma Doppler' : ' Doppler';
+  }
+  if (/^Phase [1-4]$/.test(pattern) && !/\bdop(?:pler)?\b/i.test(lookup)) {
+    if (/\bgamma\b/i.test(lookup)) lookup += ' Doppler';
+    else {
+      const weapon = normalizedTokens(lookup).find((token) => knifeWeapons.has(token));
+      const families = dopplerFamiliesByKnife.get(weapon);
+      if (families?.size > 1) return { lookup, pattern, needDopplerFamily: true };
+      if (families?.has('doppler')) lookup += ' Doppler';
+      else if (families?.has('gammadoppler')) lookup += ' Gamma Doppler';
+    }
   }
   const hasWear = /\b(?:factory\s*new|minimal\s*wear|field\s*tested|well\s*worn|battle\s*scarred|fn|mw|min|ft|ww|bs)\b/i.test(lookup);
   const assumedFactoryNew = !hasWear && /\b(?:doppler|dop)\b/i.test(lookup);
@@ -287,7 +315,7 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
   }
   const resolved = await Promise.all(parsed.items.map(async (item) => {
     const variant = extractPattern(item);
-    return { query: item, variant, match: await resolveItem(variant.lookup, fetchFn, names) };
+    return { query: item, variant, match: variant.needDopplerFamily ? {} : await resolveItem(variant.lookup, fetchFn, names) };
   }));
   const priceNames = [...new Set(resolved.flatMap((r) => r.match.names || (r.match.name ? [r.match.name] : [])))];
   let data = {};
@@ -313,6 +341,10 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
   }));
   const blocks = ['<b>BUFF163 base prices · CNY → VND</b>'];
   for (const { query, variant, match } of resolved) {
+    if (variant.needDopplerFamily) {
+      blocks.push(`<b>${escapeHtml(query)}</b>: choose Doppler or Gamma Doppler for ${escapeHtml(variant.pattern)}.`);
+      continue;
+    }
     if (match.names) {
       for (const name of match.names) blocks.push(formatQuote(name, data[name], parsed.rates, now));
       continue;
