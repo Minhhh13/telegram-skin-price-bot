@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "postinstall": "node scripts/patch-meta-messenger.mjs",
+    "postinstall": "node scripts/patch-meta-messenger.mjs && node scripts/build-messenger-sidecar.mjs",
     "start": "node server.mjs",
     "test": "node --test",
     "sync:catalog": "node scripts/sync-catalog.mjs"
