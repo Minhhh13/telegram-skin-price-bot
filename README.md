@@ -27,7 +27,7 @@ The always-on Render Starter instance points Discord's Interactions Endpoint dir
 
 ## Messenger
 
-The existing Render Starter Node service also runs a Messenger listener using the clone account, scoped to the configured TradeDesk group. Send `!buff awp long dog ft` or tag `@Thang Manh Nguyen` followed by skin names. It refreshes the target group's inbox about every 30–45 seconds because the unofficial live event stream has been unreliable; Discord's direct event delivery is faster. The Messenger client runs in a child process that recycles every 18 minutes to contain native memory growth. In-flight replies finish before a normal refresh, and successfully answered message IDs survive the child recycle. Replies use a compact plain-text layout with a direct BUFF item URL; Messenger may generate its own large preview card. This unofficial integration can still break when Meta changes its protocol or the clone session expires.
+The existing Render Starter Node service also runs a Messenger listener using the clone account, scoped to the configured TradeDesk group. Send `!buff awp long dog ft` or tag `@Thang Manh Nguyen` or `@BUFF BOT PRICE CHECKER` followed by skin names. The listener handles live insert and upsert events and refreshes the inbox about every 30–45 seconds as a fallback. This unofficial client has no target-thread history API: if a live event is missed, a refresh may return only the newest group message. Discord's direct event delivery is more reliable and faster. The Messenger client runs in a child process that recycles every 18 minutes to contain native memory growth. In-flight replies finish before a normal refresh; successfully answered message IDs and refreshed session cookies survive the child recycle. A full Render restart reloads the cookie from its environment setting. Replies use a compact plain-text layout with a direct BUFF item URL; Messenger may generate its own large preview card. This unofficial integration can still break when Meta changes its protocol or the clone session expires.
 
 Set these two Render environment variables on the **same** web service:
 
@@ -55,7 +55,7 @@ The repository supports either a separate Render web service or a separate Supab
 
 ### Render
 
-The live service uses one Render Starter instance for the HTTP webhook, Discord Gateway, and Messenger worker. It does not require another Render service or database. For a new deployment, use build command `npm ci` (or `npm install` if no lockfile), start command `npm start`, and health check `/health`. Put the three Telegram secrets below in the service environment, plus `TELEGRAM_SKIN_WEBHOOK_URL=https://<service>.onrender.com/telegram`. The service registers its Telegram webhook on startup with the same secret token.
+The live service uses one Render Starter instance for the HTTP webhook, Discord Gateway, and Messenger worker. It does not require another Render service or database. For a new deployment, use build command `npm ci` (or `npm install` if no lockfile), start command `npm start`, and health check `/health`. The root `postinstall` script applies a guarded 75 ms idle-poll pause to the pinned Messenger library to avoid wasting CPU. Put the three Telegram secrets below in the service environment, plus `TELEGRAM_SKIN_WEBHOOK_URL=https://<service>.onrender.com/telegram`. The service registers its Telegram webhook on startup with the same secret token.
 
 ### Supabase Edge Function
 
