@@ -194,11 +194,13 @@ test('reconnects when the live socket is not ready despite a connected flag', as
     async disconnect() {}
   }
   const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId },
-    SocketDownClient, { retryMs: 20, snapshotRefreshMs: 100_000 });
+    SocketDownClient, { retryMs: 20, socketReadyGraceMs: 60, snapshotRefreshMs: 100_000 });
   try {
     await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(listener.status().connected, false, 'worker should not report a dead socket as ready');
-    await new Promise((resolve) => setTimeout(resolve, 45));
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    assert.equal(connections, 1, 'initial database sync should have a grace period');
+    await new Promise((resolve) => setTimeout(resolve, 55));
     assert.equal(connections, 2, 'dead socket should reconnect before the snapshot refresh');
     assert.equal(listener.status().connected, true);
   } finally { await listener.stop(); }

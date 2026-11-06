@@ -5,7 +5,8 @@ import { isLikelySkinRequest } from './supabase/functions/skin-price-webhook/ski
 
 const MAX_IMAGE_BYTES = 5_000_000;
 const RETRY_MS = 15_000;
-const SNAPSHOT_REFRESH_MS = 30_000;
+const SNAPSHOT_REFRESH_MS = 5 * 60_000;
+const SOCKET_READY_GRACE_MS = 90_000;
 const AUTH_RETRY_INITIAL_MS = 60_000;
 const AUTH_RETRY_MAX_MS = 15 * 60_000;
 
@@ -252,7 +253,11 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
   retryTimer = setInterval(() => {
     // The native isConnected flag only checks that a client exists; fullyReady
     // reflects whether its live socket has actually received the ready event.
-    if (!socketReady() || Date.now() - lastConnectedAt >= (intervals.snapshotRefreshMs ?? SNAPSHOT_REFRESH_MS)) void connect(true);
+    // Give the socket time to finish its initial database sync before recycling it.
+    const connectedForMs = Date.now() - lastConnectedAt;
+    const readyGraceMs = intervals.socketReadyGraceMs ?? SOCKET_READY_GRACE_MS;
+    if (!client || (!socketReady() && connectedForMs >= readyGraceMs) ||
+        connectedForMs >= (intervals.snapshotRefreshMs ?? SNAPSHOT_REFRESH_MS)) void connect(true);
   }, intervals.retryMs ?? RETRY_MS);
   return {
     status: () => ({ connected: socketReady(), lastConnectedAt }),
