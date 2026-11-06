@@ -248,11 +248,14 @@ export function startMessengerListener(config, ClientClass = Client, intervals =
   };
 
   void connect();
+  const socketReady = () => Boolean(client && (client.isFullyReady?.() ?? client.isConnected));
   retryTimer = setInterval(() => {
-    if (!client?.isConnected || Date.now() - lastConnectedAt >= (intervals.snapshotRefreshMs ?? SNAPSHOT_REFRESH_MS)) void connect(true);
+    // The native isConnected flag only checks that a client exists; fullyReady
+    // reflects whether its live socket has actually received the ready event.
+    if (!socketReady() || Date.now() - lastConnectedAt >= (intervals.snapshotRefreshMs ?? SNAPSHOT_REFRESH_MS)) void connect(true);
   }, intervals.retryMs ?? RETRY_MS);
   return {
-    status: () => ({ connected: Boolean(client?.isConnected), lastConnectedAt }),
+    status: () => ({ connected: socketReady(), lastConnectedAt }),
     stop: async () => {
       stopped = true;
       clearInterval(retryTimer);

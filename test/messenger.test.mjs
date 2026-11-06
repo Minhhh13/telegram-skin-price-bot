@@ -181,6 +181,29 @@ test('invalid Messenger session backs off instead of retrying every tick', async
   } finally { await listener.stop(); }
 });
 
+test('reconnects when the live socket is not ready despite a connected flag', async () => {
+  let connections = 0;
+  class SocketDownClient extends EventEmitter {
+    get isConnected() { return true; }
+    isFullyReady() { return connections > 1; }
+    async connect() {
+      connections++;
+      return { user: { id: BigInt(accountId) }, initialData: { threads: [], messages: [] } };
+    }
+    getCookies() { return { c_user: accountId, xs: 'test' }; }
+    async disconnect() {}
+  }
+  const listener = startMessengerListener({ cookies: `c_user=${accountId}; xs=test`, threadId },
+    SocketDownClient, { retryMs: 20, snapshotRefreshMs: 100_000 });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(listener.status().connected, false, 'worker should not report a dead socket as ready');
+    await new Promise((resolve) => setTimeout(resolve, 45));
+    assert.equal(connections, 2, 'dead socket should reconnect before the snapshot refresh');
+    assert.equal(listener.status().connected, true);
+  } finally { await listener.stop(); }
+});
+
 test('live LightSpeed upserts answer rapid target-thread requests once each', async () => {
   const sent = [];
   let client;
