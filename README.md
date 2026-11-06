@@ -23,6 +23,8 @@ The default conversion shows `3.60`, `3.65`, `3.70`, `3.75`, `3.78`, and `3.80`,
 
 The same Node service exposes `/discord` for a guild-scoped `/buff` command and connects to Discord's Gateway for plain text messages. It only answers in the configured guild and `#buff-botpricer` channel. Members can simply post `AK redline ft; karambit gamma dop phase 2`, or use `/buff items: AK redline ft`. Members can optionally attach an image when Gemini is configured. The app must be installed in the guild with the `bot` and `applications.commands` scopes, permission to view/send in the dedicated channel, and Message Content intent enabled. The service verifies each slash command's Ed25519 signature and registers it on startup. The Gateway listener ignores other channels and bot messages. Discord link embeds are suppressed in its replies.
 
+To send a price to a customer, click **Customer quote** below a priced reply. Choose one item and one displayed CNY-to-VND rate, then submit. Discord shows a private, copy-ready quote with the item name, CNY ask, converted VND price, and BUFF link. This uses the price already in the bot's reply, so it makes no extra price or AI request. To refresh the price, send a new lookup first.
+
 The always-on Render Starter instance points Discord's Interactions Endpoint directly to `https://telegram-skin-price-bot.onrender.com/discord`; the Node handler verifies the Discord signature, immediately defers the command, then sends the price as a follow-up. The older Supabase `discord-bridge` source remains in this repository but is not in the live request path.
 
 ## Messenger

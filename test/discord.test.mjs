@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { createDiscordHandler, discordText, lookupDiscord, splitDiscord } from '../discord.mjs';
+import { createDiscordHandler, customerQuoteComponents, customerQuotes, discordText, lookupDiscord, splitDiscord } from '../discord.mjs';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const publicHex = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
@@ -34,6 +34,81 @@ test('Discord prices retain formatting and fit message limits', () => {
   const chunks = splitDiscord(Array.from({ length: 30 }, () => '3.65 → 587,614 VND').join('\n'), 100);
   assert.ok(chunks.length > 1);
   assert.ok(chunks.every((chunk) => chunk.length <= 100));
+});
+
+const pricedReply = `**BUFF163 base prices · CNY → VND**
+
+**AWP | Crakow! (Field-Tested)**
+**¥120.00 CNY** · [BUFF listing](https://buff.163.com/goods/10001)
+\`3.60 → ₫432,000   |   3.65 → ₫438,000\`
+Feed snapshot 2026-11-06 11:31 UTC (38 min old) ⚠️ May miss newer listings
+
+**Desert Eagle | Kumicho Dragon (Field-Tested)**
+**¥98.00 CNY** · [BUFF listing](https://buff.163.com/goods/34432)
+\`3.60 → ₫352,800   |   3.65 → ₫357,700\`
+Feed snapshot 2026-11-06 11:30 UTC (39 min old) ⚠️ May miss newer listings`;
+
+test('only priced Discord replies offer a customer quote button', () => {
+  const quotes = customerQuotes(pricedReply);
+  assert.equal(quotes.length, 2);
+  assert.deepEqual(quotes[1], {
+    name: 'Desert Eagle | Kumicho Dragon (Field-Tested)', cny: '¥98.00 CNY',
+    url: 'https://buff.163.com/goods/34432',
+    rates: [{ rate: '3.60', vnd: '₫352,800' }, { rate: '3.65', vnd: '₫357,700' }],
+  });
+  assert.equal(customerQuoteComponents(pricedReply)[0].components[0].label, 'Customer quote');
+  assert.deepEqual(customerQuoteComponents('**AK Redline FT**: no matching item found.'), []);
+});
+
+test('multi-item replies keep each priced quote together across Discord chunks', () => {
+  const block = pricedReply.split('\n\n')[1];
+  const text = ['**BUFF163 base prices · CNY → VND**', ...Array.from({ length: 10 }, () => block)].join('\n\n');
+  const chunks = splitDiscord(text, 300);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.length <= 300));
+  assert.equal(chunks.reduce((total, chunk) => total + customerQuotes(chunk).length, 0), 10);
+  assert.ok(chunks.every((chunk) => customerQuoteComponents(chunk).length));
+});
+
+test('customer quote modal copies one item and rate without another API call', async () => {
+  const handler = createDiscordHandler({ publicKey: publicHex, applicationId: 'app', guildId: 'guild', channelId: 'channel' },
+    async () => { throw new Error('Quote selection must not fetch prices'); });
+  const button = signed({ type: 3, application_id: 'app', guild_id: 'guild', channel_id: 'channel',
+    data: { custom_id: 'buff:customer-quote' }, message: { content: pricedReply } });
+  const modal = JSON.parse((await handler(button.headers, button.body)).body);
+  assert.equal(modal.type, 9);
+  assert.equal(modal.data.components[0].type, 18);
+  assert.equal(modal.data.components[0].component.options.length, 2);
+  assert.deepEqual(modal.data.components[1].component.options.map((option) => option.value), ['3.60', '3.65']);
+
+  const submit = signed({ type: 5, application_id: 'app', guild_id: 'guild', channel_id: 'channel',
+    data: { custom_id: modal.data.custom_id, components: [
+      { type: 18, component: { type: 3, custom_id: 'item', values: ['1'] } },
+      { type: 18, component: { type: 3, custom_id: 'rate', values: ['3.65'] } },
+    ] }, message: { content: pricedReply } });
+  const response = JSON.parse((await handler(submit.headers, submit.body)).body);
+  assert.equal(response.type, 4);
+  assert.equal(response.data.flags, 64);
+  assert.equal(response.data.content, 'Copy this quote:\n```text\nDesert Eagle | Kumicho Dragon (Field-Tested)\nBUFF: ¥98.00 CNY\n3.65 → ₫357,700\nhttps://buff.163.com/goods/34432\n```');
+  assert.doesNotMatch(response.data.content, /AWP|Feed snapshot|May miss|<@/);
+});
+
+test('customer quote rejects a rate that was not in the original price reply', async () => {
+  const handler = createDiscordHandler({ publicKey: publicHex, applicationId: 'app', guildId: 'guild', channelId: 'channel' });
+  const submit = signed({ type: 5, application_id: 'app', guild_id: 'guild', channel_id: 'channel',
+    data: { custom_id: 'buff:customer-quote:submit', components: [
+      { type: 18, component: { type: 3, custom_id: 'item', values: ['1'] } },
+      { type: 18, component: { type: 3, custom_id: 'rate', values: ['3.80'] } },
+    ] }, message: { content: pricedReply } });
+  const response = JSON.parse((await handler(submit.headers, submit.body)).body);
+  assert.match(response.data.content, /no longer available/);
+});
+
+test('phase-filtered quote remains identifiable in the customer copy', () => {
+  const quote = customerQuotes(`**BUFF163 base prices · CNY → VND**\n\n**★ Butterfly Knife | Doppler (Factory New) · Phase 4 (FN assumed)**\nStyle filter: **Phase 4**\n**¥17,299.00 CNY** · [BUFF item (select Phase 4)](https://buff.163.com/goods/12345)\n\`3.75 → ₫64,871,250\`\nFeed snapshot 2026-11-06 06:34 UTC`)[0];
+  assert.equal(quote.name, '★ Butterfly Knife | Doppler (Factory New) · Phase 4 (FN assumed)');
+  assert.equal(quote.url, 'https://buff.163.com/goods/12345');
+  assert.deepEqual(quote.rates, [{ rate: '3.75', vnd: '₫64,871,250' }]);
 });
 
 test('a clear catalog match returns a price without spending a Gemini request', async () => {
@@ -102,7 +177,7 @@ test('Gemini 503 falls back to OpenSkin text lookup and completes the Discord re
       buff: { native_currency: { code: 'CNY', ask: 160 }, updated_at: new Date().toISOString() },
     }])) }) };
     if (url.includes('discord.com/api/v10/webhooks/')) {
-      complete(JSON.parse(options.body).content);
+      complete(JSON.parse(options.body));
       return { ok: true };
     }
     throw new Error(`Unexpected URL ${url}`);
@@ -110,7 +185,8 @@ test('Gemini 503 falls back to OpenSkin text lookup and completes the Discord re
   const handler = createDiscordHandler({ publicKey: publicHex, applicationId: 'app', guildId: 'guild', channelId: 'channel', geminiKey: 'fake-key' }, fetchFn);
   const { headers, body } = signed({ type: 2, application_id: 'app', guild_id: 'guild', channel_id: 'channel', token: 'test-token', data: { name: 'buff', options: [{ name: 'items', value: 'AK Redline' }] } });
   assert.equal(JSON.parse((await handler(headers, body)).body).type, 5);
-  const text = await posted;
-  assert.match(text, /Redline \(Minimal Wear\)/);
-  assert.match(text, /Redline \(Field-Tested\)/);
+  const message = await posted;
+  assert.match(message.content, /Redline \(Minimal Wear\)/);
+  assert.match(message.content, /Redline \(Field-Tested\)/);
+  assert.equal(message.components[0].components[0].custom_id, 'buff:customer-quote');
 });
