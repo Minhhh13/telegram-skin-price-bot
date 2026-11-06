@@ -163,7 +163,7 @@ test('failed Messenger send is retried from the next inbox snapshot', async () =
   } finally { await listener.stop(); }
 });
 
-test('live LightSpeed upserts answer only target-thread requests once', async () => {
+test('live LightSpeed upserts answer rapid target-thread requests once each', async () => {
   const sent = [];
   let client;
   class FakeClient extends EventEmitter {
@@ -187,15 +187,17 @@ test('live LightSpeed upserts answer only target-thread requests once', async ()
     const other = { MessageId: 'competitor-1', ThreadKey: 888n, SenderId: 999n,
       Text: '!buff', TimestampMs: timestampMs };
     const upsert = { MessageId: 'target-1', ThreadKey: BigInt(threadId), SenderId: 999n,
-      Text: '!buff awp redline ft', TimestampMs: timestampMs };
+      Text: '@BUFF BOT PRICE CHECKER ak bthemonster mw', TimestampMs: timestampMs };
+    const second = { MessageId: 'target-2', ThreadKey: BigInt(threadId), SenderId: 999n,
+      Text: '@Thang Manh Nguyen m9 gamma doppler p2', TimestampMs: timestampMs + 1n };
     client.emit('raw', { from: 'lightspeed', type: 'Event_PublishResponse', data: {
-      Table: { LSUpsertMessage: [other, upsert] },
+      Table: { LSUpsertMessage: [other, second, upsert] },
     } });
     client.emit('message', { id: upsert.MessageId, threadId: upsert.ThreadKey,
       senderId: upsert.SenderId, text: upsert.Text, timestampMs });
     await new Promise((resolve) => setTimeout(resolve, 40));
-    assert.equal(sent.length, 1);
-    assert.equal(sent[0].id, BigInt(threadId));
-    assert.doesNotMatch(sent[0].payload.text, /competitor/);
+    assert.equal(sent.length, 2);
+    assert.ok(sent.every((message) => message.id === BigInt(threadId)));
+    assert.ok(sent.every((message) => !/competitor/.test(message.payload.text)));
   } finally { await listener.stop(); }
 });
