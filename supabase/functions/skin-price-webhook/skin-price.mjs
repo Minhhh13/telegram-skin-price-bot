@@ -1,4 +1,5 @@
 import { itemNames } from './catalog.mjs';
+import { fuzzyCatalogMatches, fuzzyUniqueMatch } from './catalog-search.mjs';
 
 const API = 'https://api.openskin.dev/v1';
 const DEFAULT_RATES = [3.6, 3.65, 3.7, 3.75, 3.78, 3.8];
@@ -88,28 +89,82 @@ function normalizedTokens(value) {
 const wears = new Set(['factorynew', 'minimalwear', 'fieldtested', 'wellworn', 'battlescarred']);
 const ignored = new Set(['price', 'skin', 'skins', 'item', 'items', 'buff', 'buff163', 'for', 'a', 'an', 'on', 'in', 'base', 'current', 'find', 'check', 'show', 'me', 'please', 'what', 'is', 'of', 'now', 'how', 'much', 'does', 'cost', 'can', 'you', 'tell', 'the', 'right']);
 const special = new Set(['souvenir', 'stattrak', ...wears]);
-const weaponNames = [...new Set(itemNames.filter((name) => name.includes('|')).map((name) => normalizedTokens(name.split('|')[0]).filter((token) => !special.has(token)).join('')))].filter(Boolean).sort((a, b) => b.length - a.length);
+// Agent names use the same "name | unit" punctuation as weapon skins, but the
+// right-hand side is an agent unit rather than a finish. Keep those catalogue
+// rows out of weapon detection and handle their names separately below.
+const agentUnits = new Set([
+  'The Professionals', 'Guerrilla Warfare', 'SWAT', 'Sabre', 'Phoenix',
+  'Gendarmerie Nationale', 'Elite Crew', 'NSWC SEAL', 'SEAL Frogman',
+  'FBI', 'SAS', 'NZSAS', 'KSK', 'USAF TACP', 'TACP Cavalry',
+  'Brazilian 1st Battalion',
+]);
+function isAgentName(name) {
+  const parts = name.split('|');
+  return parts.length === 2 && agentUnits.has(parts[1].trim());
+}
+const weaponNames = [...new Set(itemNames.filter((name) => name.includes('|') && !isAgentName(name))
+  .map((name) => normalizedTokens(name.split('|')[0]).filter((token) => !special.has(token)).join('')))]
+  .filter(Boolean).sort((a, b) => b.length - a.length);
 const weapons = new Set(weaponNames);
 function entryFor(name) {
   const [left, right = ''] = name.split('|');
   const tokens = normalizedTokens(name);
+  if (isAgentName(name)) return {
+    name, kind: 'agent', tokens,
+    agentTokens: normalizedTokens(left).filter((token) => token !== 'the'),
+    unitTokens: normalizedTokens(right).filter((token) => token !== 'the'),
+    weapon: '', finish: '', finishNoArticle: '', finishTokens: [],
+    wear: '', souvenir: false, stattrak: false,
+  };
   const finishTokens = normalizedTokens((right || name).replace(/\([^)]*\)/g, '')).filter((token) => !special.has(token));
-  return { name, tokens, weapon: right ? normalizedTokens(left).filter((token) => !special.has(token)).join('') : '',
+  return { name, kind: 'skin', tokens, weapon: right ? normalizedTokens(left).filter((token) => !special.has(token)).join('') : '',
     finish: finishTokens.join(''), finishNoArticle: finishTokens.filter((token) => token !== 'the').join(''), finishTokens,
     wear: tokens.find((token) => wears.has(token)) || '', souvenir: tokens.includes('souvenir'), stattrak: tokens.includes('stattrak') };
 }
 const catalog = itemNames.map(entryFor);
+const catalogAgents = catalog.filter((entry) => entry.kind === 'agent');
 const catalogFinishKeys = new Set(catalog.filter((entry) => entry.weapon && entry.finish)
   .flatMap((entry) => [`${entry.weapon}|${entry.finish}`, `${entry.weapon}|${entry.finishNoArticle}`]));
 const partialWears = new Map([
   ['factory', 'factorynew'], ['minimal', 'minimalwear'], ['field', 'fieldtested'],
   ['well', 'wellworn'], ['battle', 'battlescarred'],
 ]);
+const wearWordPairs = [
+  ['factory', 'new', 'factorynew'], ['minimal', 'wear', 'minimalwear'],
+  ['field', 'tested', 'fieldtested'], ['well', 'worn', 'wellworn'],
+  ['battle', 'scarred', 'battlescarred'],
+];
+
+function correctedTrailingWear(tokens) {
+  if (tokens.some((token) => wears.has(token))) return tokens;
+  const last = tokens.at(-1);
+  const before = tokens.at(-2);
+  if (before && last) {
+    const pairs = wearWordPairs.map(([first, second, wear]) => ({
+      wear, error: distance(before, first, 1) + distance(last, second, 1),
+    })).filter(({ error }) => error <= 2).sort((a, b) => a.error - b.error);
+    if (pairs.length && (!pairs[1] || pairs[0].error < pairs[1].error)) {
+      return [...tokens.slice(0, -2), pairs[0].wear];
+    }
+  }
+  if (!last || last.length < 4 || partialWears.has(last)) return tokens;
+  const close = [...partialWears.entries()].map(([word, wear]) => ({
+    word, wear, error: distance(last, word, 1),
+  })).filter(({ error }) => error <= 1).sort((a, b) => a.error - b.error);
+  if (!close.length || (close[1] && close[0].error === close[1].error)) return tokens;
+  // A near-wear word can belong to a finish, e.g. "UMP K.O. Factry". Check
+  // the corrected finish before treating the final word as a wear qualifier.
+  const correctedFinish = [...tokens.slice(0, -1), close[0].word]
+    .filter((token) => !special.has(token) && !ignored.has(token) && token !== 'the');
+  const weapon = requestedWeapon(correctedFinish);
+  if (weapon.names.some((name) => catalogFinishKeys.has(`${name}|${weapon.finishKey}`))) return tokens;
+  return [...tokens.slice(0, -1), close[0].wear];
+}
 
 // A request may abbreviate a wear to one word. Keep catalogue names intact:
 // "Field Agent" and "K.O. Factory" are finishes, not wear descriptions.
 function requestTokens(value) {
-  const tokens = normalizedTokens(String(value || ''));
+  const tokens = correctedTrailingWear(normalizedTokens(String(value || '')));
   const partial = tokens.find((token) => partialWears.has(token));
   if (!partial) return tokens;
   const base = tokens.filter((token) => !special.has(token) && !ignored.has(token) && token !== 'the');
@@ -160,12 +215,14 @@ export function catalogHintsForText(text, limit = 16) {
   }
   ranked.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   const seen = new Set();
-  return ranked.filter(({ name }) => {
+  const skinHints = ranked.filter(({ name }) => {
     const base = name.replace(/ \((?:Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/, '');
     if (seen.has(base)) return false;
     seen.add(base);
     return true;
-  }).slice(0, limit).map(({ name }) => name);
+  }).map(({ name }) => name);
+  const agentHints = rankAgentCandidates(text, catalogAgents).map(({ entry }) => entry.name);
+  return [...new Set([...agentHints, ...skinHints])].slice(0, limit);
 }
 
 function distance(a, b, max = 3) {
@@ -180,11 +237,48 @@ function distance(a, b, max = 3) {
   return previous[b.length];
 }
 
+function rankAgentCandidates(text, entries = catalogAgents) {
+  const rawTokens = requestTokens(text);
+  const explicitAgent = rawTokens.includes('agent') || rawTokens.includes('operator');
+  const tokens = [...new Set(rawTokens.filter((token) => !ignored.has(token) &&
+    token !== 'agent' && token !== 'operator'))];
+  if (!tokens.length || (tokens.length < 2 && !explicitAgent)) return [];
+  // A named weapon is a hard constraint: "Negev Loudmouth" is a weapon skin,
+  // even though "Loudmouth" also appears in an agent's name.
+  if (requestedWeapon(tokens).names.length) return [];
+  const ranked = [];
+  for (const entry of entries) {
+    if (entry.kind !== 'agent') continue;
+    let score = 0;
+    let nameMatches = 0;
+    for (const token of tokens) {
+      const nameScore = tokenMatchScore(token, entry.agentTokens);
+      const unitScore = tokenMatchScore(token, entry.unitTokens);
+      if (!nameScore && !unitScore) { score = 0; break; }
+      if (nameScore >= unitScore) { nameMatches++; score += nameScore; }
+      else score += Math.max(1, unitScore - 3);
+    }
+    if (score && nameMatches) ranked.push({ entry, score });
+  }
+  return ranked.sort((a, b) => b.score - a.score || a.entry.name.localeCompare(b.entry.name));
+}
+
+function tokenMatchScore(typed, candidates) {
+  if (candidates.includes(typed)) return 10;
+  if (typed.length >= 4 && candidates.some((word) => word.startsWith(typed))) return 8;
+  const maxError = typed.length >= 8 ? 2 : typed.length >= 5 ? 1 : 0;
+  if (maxError && candidates.some((word) => distance(typed, word, maxError) <= maxError)) return 6;
+  return 0;
+}
+
 // A failed exact lookup should offer real catalogue items, not invent a price.
 // Keep every explicit variant constraint while ranking the finish text. This
 // runs only for unresolved requests, so normal lookups stay on the fast path.
 export function catalogSuggestionsForText(text, limit = 5, names = null) {
   const entries = names ? names.map((name) => entryFor(typeof name === 'string' ? name : name.name)) : catalog;
+  const agentMatches = rankAgentCandidates(text, entries);
+  if (agentMatches.length) return agentMatches.slice(0, Math.max(0, Math.min(5, limit)))
+    .map(({ entry }) => entry.name);
   const tokens = [...new Set(requestTokens(text))];
   const wear = tokens.find((token) => wears.has(token)) || '';
   const stattrak = tokens.includes('stattrak');
@@ -236,9 +330,12 @@ export function catalogSuggestionsForText(text, limit = 5, names = null) {
   }
   const sorted = [...ranked.values()].sort((a, b) => b.score - a.score ||
     a.entry.name.localeCompare(b.entry.name));
-  return sorted.filter(({ score }) => score >= sorted[0].score - 25)
+  const local = sorted.filter(({ score }) => score >= sorted[0].score - 25)
     .slice(0, Math.max(0, Math.min(5, limit)))
     .map(({ entry }) => entry.name);
+  const fuzzy = fuzzyCatalogMatches(text, names || itemNames, limit).filter((name) =>
+    !weapon.names.length || weapon.names.includes(entryFor(name).weapon));
+  return [...new Set([...fuzzy, ...local])].slice(0, Math.max(0, Math.min(5, limit)));
 }
 
 function requestedWeapon(baseTokens) {
@@ -299,10 +396,35 @@ function requestedWeapon(baseTokens) {
 
 function resolveFromCatalog(query, entries) {
   const corrected = String(query).replace(/\bawp\s+the\s+price\b/i, 'awp the prince');
+  if (/^★\s/.test(corrected.trim())) {
+    const bare = entries.find((entry) => !entry.name.includes('|') && entry.name === corrected.trim());
+    if (bare) return { name: bare.name };
+  }
   const tokens = [...new Set(requestTokens(corrected))];
-  if (tokens.includes('vanilla')) {
+  const meaningful = tokens.filter((token) => !ignored.has(token) && !special.has(token));
+  if (meaningful.length === 1 && meaningful[0].length >= 4) {
+    const word = meaningful[0];
+    const agents = entries.filter((entry) => entry.kind === 'agent' && entry.agentTokens.includes(word));
+    if (agents.length) {
+      const skins = entries.filter((entry) => entry.kind === 'skin' &&
+        entry.finishTokens.includes(word) && !entry.stattrak && !entry.souvenir);
+      const matches = [...agents, ...skins].map((entry) => entry.name);
+      if (matches.length === 1) return { name: matches[0] };
+      return { ambiguous: matches.slice(0, 5), more: matches.length > 5 };
+    }
+  }
+  const agentMatches = rankAgentCandidates(corrected, entries);
+  if (agentMatches.length) {
+    const best = agentMatches[0].score;
+    const matches = agentMatches.filter(({ score }) => score === best);
+    if (matches.length === 1) return { name: matches[0].entry.name };
+    return { ambiguous: matches.slice(0, 5).map(({ entry }) => entry.name), more: matches.length > 5 };
+  }
+  const vanillaTokens = tokens.map((token) => token === 'vanilla' ||
+    (token.length >= 5 && distance(token, 'vanilla', 1) <= 1) ? 'vanilla' : token);
+  if (vanillaTokens.includes('vanilla')) {
     const stattrak = tokens.includes('stattrak');
-    const knife = requestedWeapon(tokens.filter((token) => token !== 'vanilla' && token !== 'stattrak'
+    const knife = requestedWeapon(vanillaTokens.filter((token) => token !== 'vanilla' && token !== 'stattrak'
       && !ignored.has(token)));
     if (knife.names.length === 1 && !knife.finishKey && knifeWeapons.has(knife.names[0])) {
       const bare = entries.find((entry) => !entry.name.includes('|') &&
@@ -359,6 +481,15 @@ function resolveFromCatalog(query, entries) {
 export function aiItemSupportedByText(source, item) {
   const sourceTokens = requestTokens(source);
   const candidate = entryFor(item);
+  if (candidate.kind === 'agent') {
+    let parts;
+    try { parts = parseRequest(source).items; } catch { return false; }
+    return parts.some((part) => {
+      const matches = rankAgentCandidates(part, catalogAgents);
+      return matches.length && matches[0].entry.name === item &&
+        (matches.length === 1 || matches[0].score > matches[1].score);
+    });
+  }
   const sourceWears = [...new Set(sourceTokens.filter((token) => wears.has(token)))];
   const singleItem = (() => {
     try { return parseRequest(source).items.length === 1; } catch { return false; }
@@ -390,7 +521,11 @@ export function aiItemSupportedByText(source, item) {
       if (distance(sourceKey.slice(start, start + length), finish, 2) <= 2) return true;
     }
   }
-  return false;
+  // The same unique, constraint-preserving typo match used for a direct
+  // request can validate a Gemini candidate with a transposed finish word.
+  try {
+    return parseRequest(source).items.some((part) => fuzzyUniqueMatch(part)?.name === item);
+  } catch { return false; }
 }
 
 async function getJson(url, options = {}, fetchFn = fetch) {
@@ -409,20 +544,61 @@ async function getJson(url, options = {}, fetchFn = fetch) {
 
 export async function resolveItem(query, _fetchFn = fetch, names = null) {
   const entries = names ? names.map((name) => entryFor(typeof name === 'string' ? name : name.name)) : catalog;
-  return resolveFromCatalog(query, entries);
+  const local = resolveFromCatalog(query, entries);
+  // Preserve the exact resolver's explicit-variant handling. The fuzzy index
+  // is only a fallback for a likely typo, never a replacement for a resolved
+  // wear, a missing finish, or Doppler style selection.
+  if (!local.missing || /\b(?:phase\s*[1-4]|p[1-4])\b/i.test(query)) return local;
+  const gemstone = /\b(?:ruby|sapphire|emerald|black\s*pearl)\b/i.test(query);
+  if (gemstone && requestedWeapon(normalizedTokens(query)).names.some((name) => knifeWeapons.has(name))) return local;
+  return fuzzyUniqueMatch(query, names || itemNames) || local;
 }
 
 function formatRate(rate) {
   return rate.toFixed(2);
 }
 
+function nearStyleWord(typed, actual) {
+  if (typed === actual || distance(typed, actual, 1) <= 1) return true;
+  for (let i = 0; i < typed.length - 1; i++) {
+    if (typed[i] === typed[i + 1]) continue;
+    const swapped = typed.slice(0, i) + typed[i + 1] + typed[i] + typed.slice(i + 2);
+    if (swapped === actual) return true;
+  }
+  return false;
+}
+
+function normalizeStyleSpelling(query) {
+  const text = String(query);
+  const weapon = requestedWeapon(normalizedTokens(text)).names;
+  const knife = weapon.some((name) => knifeWeapons.has(name));
+  const words = text.toLowerCase().match(/\b[a-z]{3,}\b/g) || [];
+  const dopplerCue = words.some((word) => ['dop', 'dopp'].includes(word) || nearStyleWord(word, 'doppler'));
+  const phaseCue = /\bp[1-4]\b|\b(?:phase|pahse)\s*[1-4]\b/i.test(text);
+  if (!knife && !dopplerCue && !(weapon.length && phaseCue)) return text;
+  const vocabulary = ['doppler', 'gamma', 'ruby', 'sapphire', 'emerald', 'phase', 'black', 'pearl'];
+  return text.replace(/\b[a-z]{3,}\b/gi, (word) => {
+    if (word.length < 4 && word.toLowerCase() !== 'rby') return word;
+    const possible = vocabulary.filter((actual) => nearStyleWord(word.toLowerCase(), actual));
+    return possible.length === 1 ? possible[0] : word;
+  });
+}
+
 function extractPattern(query) {
-  const match = String(query).match(/\b(phase\s*[1-4]|p[1-4]|black\s*pearl|ruby|sapphire|emerald)\b/i);
-  if (!match) return { lookup: query, pattern: '' };
+  const text = normalizeStyleSpelling(query);
+  const match = text.match(/\b(phase\s*[1-4]|p[1-4]|black\s*pearl|ruby|sapphire|emerald)\b/i);
+  if (!match) return { lookup: text, pattern: '' };
+  // Ruby/Emerald also occur literally in non-Doppler finish names. Treat them
+  // as style filters only for a knife or an explicitly named Doppler item.
+  const gemstoneWord = /^(?:black\s*pearl|ruby|sapphire|emerald)$/i.test(match[1]);
+  if (gemstoneWord && !/\bdop(?:p|pler)?\b/i.test(text) &&
+      !requestedWeapon(normalizedTokens(text)).names.some((name) => knifeWeapons.has(name))) {
+    return { lookup: text, pattern: '' };
+  }
   const pattern = /^(?:phase|p[1-4]$)/i.test(match[1]) ? `Phase ${match[1].match(/[1-4]/)[0]}`
     : /^black/i.test(match[1]) ? 'Black Pearl'
     : match[1][0].toUpperCase() + match[1].slice(1).toLowerCase();
-  let lookup = String(query).slice(0, match.index) + String(query).slice(match.index + match[0].length);
+  let lookup = text.slice(0, match.index) + text.slice(match.index + match[0].length);
   lookup = lookup.trim().replace(/\s{2,}/g, ' ');
   // BUFF lists these gemstones as style filters on Doppler items, not as item names.
   const gemstone = ['Ruby', 'Sapphire', 'Black Pearl', 'Emerald'].includes(pattern);

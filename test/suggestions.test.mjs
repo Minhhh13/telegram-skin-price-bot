@@ -45,9 +45,10 @@ test('MP9 Hot Rod typo ranks a plausible canonical item without inventing a wear
 
 test('unmatched request shows candidates without making up a price', async () => {
   const noPriceFetch = () => { throw new Error('Uncertain item must not fetch a price'); };
-  const reply = (await buildReply('glock twilight galxy maybe', '', noPriceFetch)).join('\n');
+  const reply = (await buildReply('glock twilight galaxy or moonrise', '', noPriceFetch)).join('\n');
   assert.match(reply, /possible catalogue matches/);
   assert.match(reply, /Glock-18 \| Twilight Galaxy \(Factory New\)/);
+  assert.match(reply, /Glock-18 \| Moonrise \(Factory New\)/);
   assert.doesNotMatch(reply, /¥\d|CNY listing unavailable/);
 });
 
@@ -62,7 +63,7 @@ test('Discord still lets Gemini interpret an uncertain name before showing candi
     }
     throw new Error(`Uncertain item must not fetch a price: ${url}`);
   };
-  const reply = (await lookupDiscord('glock twilight galxy maybe', null, 'test-key', fetchFn)).join('\n');
+  const reply = (await lookupDiscord('glock twilight galaxy or moonrise', null, 'test-key', fetchFn)).join('\n');
   assert.equal(geminiCalls, 1);
   assert.match(reply, /Glock-18 \| Twilight Galaxy \(Factory New\)/);
   assert.doesNotMatch(reply, /AK-47 \| Redline|¥\d/);

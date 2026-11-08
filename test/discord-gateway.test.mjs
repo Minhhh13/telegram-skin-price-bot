@@ -45,3 +45,40 @@ test('plain Discord messages are scoped to the dedicated channel and use the sty
   assert.equal(sent[0].components[0].components[0].custom_id, 'buff:customer-quote');
   assert.equal(sent[0].components[0].components[1].custom_id, 'buff:custom-rate');
 });
+
+test('a Chinese BUFF screenshot follows the Discord photo path to the canonical item price', async () => {
+  const webp = Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0x04, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+  const attachments = [{ url: 'https://cdn.discordapp.com/attachments/test/photo.webp', contentType: 'image/webp', size: webp.length }];
+  attachments.size = 1;
+  const sent = [];
+  const message = {
+    id: '123456789012345680', author: { bot: false, id: '123456789012345678' },
+    guildId: 'our-guild', channelId: 'buff-channel', content: '', attachments,
+    channel: { sendTyping: async () => {}, send: async (value) => sent.push(value) },
+    reply: async (value) => sent.push(value),
+  };
+  const config = { guildId: 'our-guild', channelId: 'buff-channel', applicationId: '1567887370886320190', geminiKey: 'test-key' };
+  const fetchFn = async (url, options) => {
+    const target = String(url);
+    if (target.includes('cdn.discordapp.com')) return { ok: true, arrayBuffer: async () => webp.buffer };
+    if (target.includes('generativelanguage.googleapis.com')) {
+      const request = JSON.parse(options.body);
+      assert.equal(request.contents[0].parts[1].inline_data.mime_type, 'image/webp');
+      assert.match(request.contents[0].parts[0].text, /Simplified Chinese BUFF163/);
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [
+        { text: JSON.stringify({ items: ['★ Flip Knife | Damascus Steel (Factory New)'] }) },
+      ] } }] }) };
+    }
+    if (target.endsWith('/prices/batch')) return { ok: true, json: async () => ({ data: {
+      '★ Flip Knife | Damascus Steel (Factory New)': {
+        buff: { native_currency: { code: 'CNY', ask: 777 }, updated_at: new Date().toISOString() },
+        links: { buff: 'https://buff.163.com/goods/12345' },
+      },
+    } }) };
+    throw new Error(`Unexpected URL ${target}`);
+  };
+  assert.equal(await answerChannelMessage(message, config, fetchFn), true);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].content, /★ Flip Knife \| Damascus Steel \(Factory New\)/);
+  assert.match(sent[0].content, /¥777\.00 CNY/);
+});

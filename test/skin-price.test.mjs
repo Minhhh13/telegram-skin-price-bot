@@ -79,6 +79,14 @@ test('partial wear word field resolves B the Monster as Field-Tested, including 
     { name: '★ Specialist Gloves | Field Agent (Field-Tested)' });
   assert.deepEqual(await resolveItem('ump45 ko factory ft'),
     { name: 'UMP-45 | K.O. Factory (Field-Tested)' });
+  assert.deepEqual(await resolveItem('ak lotus fild'),
+    { name: 'AK-47 | Wild Lotus (Field-Tested)' });
+  assert.deepEqual(await resolveItem('ak lotus wel worn'),
+    { name: 'AK-47 | Wild Lotus (Well-Worn)' });
+  assert.equal(aiItemSupportedByText('ak lotus fild', 'AK-47 | Wild Lotus (Field-Tested)'), true);
+  assert.equal(aiItemSupportedByText('ak lotus fild', 'AK-47 | Wild Lotus (Factory New)'), false);
+  assert.deepEqual(await resolveItem('ump45 ko factry ft'),
+    { name: 'UMP-45 | K.O. Factory (Field-Tested)' });
 });
 
 test('Sunburst Minimal Wear shorthand resolves directly and never changes the requested wear', async () => {
@@ -91,10 +99,87 @@ test('Sunburst Minimal Wear shorthand resolves directly and never changes the re
 });
 
 test('plain knife shorthand resolves to the catalog item without a finish', async () => {
+  assert.deepEqual(await resolveItem('karambit'), { needFinish: 'karambit' });
+  assert.deepEqual(await resolveItem('★ Karambit'), { name: '★ Karambit' });
+  assert.deepEqual(await resolveItem('★ Talon Knife'), { name: '★ Talon Knife' });
   assert.deepEqual(await resolveItem('karambit vanilla'), { name: '★ Karambit' });
   assert.deepEqual(await resolveItem('karam vanilla'), { name: '★ Karambit' });
   assert.deepEqual(await resolveItem('butterfly vanilla'), { name: '★ Butterfly Knife' });
   assert.deepEqual(await resolveItem('stt karambit vanilla'), { name: '★ StatTrak™ Karambit' });
+  assert.deepEqual(await resolveItem('Talon knife vanila'), { name: '★ Talon Knife' });
+  assert.deepEqual(await resolveItem('taolon knife vanila'), { name: '★ Talon Knife' });
+});
+
+test('agent names resolve by character, with unit treated as optional agent context', async () => {
+  const loudmouth = 'Sir Bloody Loudmouth Darryl | The Professionals';
+  for (const query of ['sir bloody loudmouth', 'loudmouth darryl',
+    'sir bloody loudmouth darryl', loudmouth, 'sir bloodi loudmouth']) {
+    assert.deepEqual(await resolveItem(query), { name: loudmouth }, query);
+    assert.equal(aiItemSupportedByText(query, loudmouth), true, query);
+  }
+  assert.equal(catalogHintsForText('sir bloody loudmouth')[0], loudmouth);
+  assert.deepEqual(await resolveItem('D Squadron Officer NZSAS'),
+    { name: 'D Squadron Officer | NZSAS' });
+  const ambiguous = await resolveItem('sir bloody');
+  assert.equal(ambiguous.ambiguous.length, 5);
+  assert.ok(ambiguous.ambiguous.every((name) => name.endsWith('| The Professionals')));
+  assert.equal(aiItemSupportedByText('sir bloody loudmouth', 'Negev | Loudmouth (Field-Tested)'), false);
+  assert.ok((await resolveItem('negev loudmouth')).names.every((name) => name.startsWith('Negev | Loudmouth')));
+  const sharedWord = await resolveItem('loudmouth');
+  assert.ok(sharedWord.ambiguous.includes(loudmouth));
+  assert.ok(sharedWord.ambiguous.some((name) => name.startsWith('Negev | Loudmouth')));
+});
+
+test('a close finish spelling resolves locally without changing the requested wear', async () => {
+  assert.deepEqual(await resolveItem('glock twilght galxy fn'),
+    { name: 'Glock-18 | Twilight Galaxy (Factory New)' });
+  assert.deepEqual(await resolveItem('glock twilght galxy ft'),
+    { name: 'Glock-18 | Twilight Galaxy (Field-Tested)' });
+  assert.deepEqual(await resolveItem('ak nonsense ft'), { missing: true });
+  assert.deepEqual(await resolveItem('ak ltous fn'),
+    { name: 'AK-47 | Wild Lotus (Factory New)' });
+  assert.deepEqual(await resolveItem('ak wild ltous fn'),
+    { name: 'AK-47 | Wild Lotus (Factory New)' });
+  assert.deepEqual(await resolveItem('awp dragonlroe ft'),
+    { name: 'AWP | Dragon Lore (Field-Tested)' });
+  assert.equal(aiItemSupportedByText('ak ltous fn', 'AK-47 | Wild Lotus (Factory New)'), true);
+  assert.equal(aiItemSupportedByText('ak ltous fn', 'AK-47 | Wild Lotus (Field-Tested)'), false);
+});
+
+test('literal Ruby and Emerald finishes are not mistaken for Doppler styles', async () => {
+  const requested = [];
+  const phaseItems = [];
+  const fakeFetch = async (url, options) => {
+    if (url.endsWith('/prices/batch')) {
+      const names = JSON.parse(options.body).items;
+      requested.push(...names);
+      return { ok: true, json: async () => ({ data: Object.fromEntries(names.map((name) => [name, {
+        buff: { native_currency: { code: 'CNY', ask: 100 }, updated_at: observed },
+      }])) }) };
+    }
+    if (url.includes('/prices/buff/phases?')) {
+      phaseItems.push(new URL(url).searchParams.get('item'));
+      return { ok: true, json: async () => ({ patterns: [{
+        pattern: 'Ruby', native_currency: { code: 'CNY', ask: 300 }, updated_at: observed,
+      }] }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const reply = (await buildReply(
+    'AK emerald pinstripe fn; MP9 ruby poison dart ft; P90 emerald dragon mw; specialist gloves emerald web ft; hydra gloves emerald bs; m9 ruby',
+    '', fakeFetch, Date.parse('2026-11-05T10:30:00Z'),
+  )).join('\n');
+  for (const name of [
+    'AK-47 | Emerald Pinstripe (Factory New)',
+    'MP9 | Ruby Poison Dart (Field-Tested)',
+    'P90 | Emerald Dragon (Minimal Wear)',
+    '★ Specialist Gloves | Emerald Web (Field-Tested)',
+    '★ Hydra Gloves | Emerald (Battle-Scarred)',
+    '★ M9 Bayonet | Doppler (Factory New)',
+  ]) assert.ok(requested.includes(name), name);
+  assert.deepEqual(phaseItems, ['★ M9 Bayonet | Doppler (Factory New)']);
+  assert.match(reply, /M9 Bayonet \| Doppler \(Factory New\) · Ruby/);
+  assert.equal((reply.match(/Style filter: <b>Ruby<\/b>/g) || []).length, 1);
 });
 
 test('local catalog resolves AWP The Prince with omitted article and typo', async () => {
@@ -435,6 +520,65 @@ test('butter gamma p1 fn resolves Butterfly Knife Gamma Doppler Phase 1', async 
     assert.match(reply, /Butterfly Knife \| Gamma Doppler \(Factory New\) · Phase 1/, query);
     assert.match(reply, /¥12,000\.00 CNY/, query);
     assert.doesNotMatch(reply, /¥9,000\.00 CNY|no matching item found/, query);
+  }
+});
+
+test('misspelled gamma Doppler still quotes the requested Phase 2', async () => {
+  const item = '★ Butterfly Knife | Gamma Doppler (Factory New)';
+  const fetchFn = async (url, options) => {
+    if (url.endsWith('/prices/batch')) {
+      assert.deepEqual(JSON.parse(options.body).items, [item]);
+      return { ok: true, json: async () => ({ data: { [item]: {
+        buff: { native_currency: { code: 'CNY', ask: 9000 }, updated_at: observed },
+      } } }) };
+    }
+    if (url.includes('/prices/buff/phases?')) {
+      assert.equal(new URL(url).searchParams.get('item'), item);
+      return { ok: true, json: async () => ({ patterns: [{
+        pattern: 'Phase 2', native_currency: { code: 'CNY', ask: 11000 }, updated_at: observed,
+      }] }) };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  };
+  const reply = (await buildReply('btf gmma dop p2', '', fetchFn,
+    Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+  assert.match(reply, /Butterfly Knife \| Gamma Doppler \(Factory New\) · Phase 2 \(FN assumed\)/);
+  assert.match(reply, /¥11,000\.00 CNY/);
+  assert.doesNotMatch(reply, /¥9,000\.00 CNY|no matching item found/);
+});
+
+test('knife Doppler style typos keep the requested family and phase', async () => {
+  const cases = [
+    ['butterfly dopler p2', '★ Butterfly Knife | Doppler (Factory New)', 'Phase 2'],
+    ['m9 rubby', '★ M9 Bayonet | Doppler (Factory New)', 'Ruby'],
+    ['m9 saphire', '★ M9 Bayonet | Doppler (Factory New)', 'Sapphire'],
+    ['m9 emrald', '★ M9 Bayonet | Gamma Doppler (Factory New)', 'Emerald'],
+    ['m9 gamam p2', '★ M9 Bayonet | Gamma Doppler (Factory New)', 'Phase 2'],
+    ['m9 dop pahse 2', '★ M9 Bayonet | Doppler (Factory New)', 'Phase 2'],
+    ['m9 gamam dop p2', '★ M9 Bayonet | Gamma Doppler (Factory New)', 'Phase 2'],
+    ['m9 gamma dop pahse 2', '★ M9 Bayonet | Gamma Doppler (Factory New)', 'Phase 2'],
+  ];
+  for (const [query, item, pattern] of cases) {
+    const fetchFn = async (url, options) => {
+      if (url.endsWith('/prices/batch')) {
+        assert.deepEqual(JSON.parse(options.body).items, [item], query);
+        return { ok: true, json: async () => ({ data: { [item]: {
+          buff: { native_currency: { code: 'CNY', ask: 100 }, updated_at: observed },
+        } } }) };
+      }
+      if (url.includes('/prices/buff/phases?')) {
+        assert.equal(new URL(url).searchParams.get('item'), item, query);
+        return { ok: true, json: async () => ({ patterns: [{
+          pattern, native_currency: { code: 'CNY', ask: 300 }, updated_at: observed,
+        }] }) };
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    };
+    const reply = (await buildReply(query, '', fetchFn,
+      Date.parse('2026-11-05T10:30:00Z'))).join('\n');
+    assert.ok(reply.includes(`${item} · ${pattern}`), query);
+    assert.match(reply, /¥300\.00 CNY/, query);
+    assert.doesNotMatch(reply, /choose Doppler or Gamma Doppler|no matching item found|¥100\.00 CNY/, query);
   }
 });
 

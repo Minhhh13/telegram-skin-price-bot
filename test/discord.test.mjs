@@ -194,6 +194,33 @@ test('a clear catalog match returns a price without spending a Gemini request', 
   assert.match(reply, /¥160\.00 CNY/);
 });
 
+test('clear agent and typo matches use the fast catalog path without Gemini', async () => {
+  const cases = [
+    ['Talon knife vanila', '★ Talon Knife'],
+    ['sir bloody loudmouth', 'Sir Bloody Loudmouth Darryl | The Professionals'],
+    ['glock twilght galxy fn', 'Glock-18 | Twilight Galaxy (Factory New)'],
+  ];
+  for (const [request, name] of cases) {
+    let priceCalls = 0;
+    const fetchFn = async (url, options) => {
+      if (String(url).includes('generativelanguage.googleapis.com')) {
+        throw new Error(`${request} should resolve without Gemini`);
+      }
+      if (String(url).endsWith('/prices/batch')) {
+        priceCalls++;
+        assert.deepEqual(JSON.parse(options.body).items, [name]);
+        return { ok: true, json: async () => ({ data: {
+          [name]: { buff: { native_currency: { code: 'CNY', ask: 120 }, updated_at: new Date().toISOString() } },
+        } }) };
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    };
+    const reply = (await lookupDiscord(request, null, 'fake-key', fetchFn)).join('\n');
+    assert.equal(priceCalls, 1, request);
+    assert.ok(reply.includes(name), request);
+  }
+});
+
 test('a photo reaches Gemini with the original message and image', async () => {
   let prompt = '';
   let imageData;
