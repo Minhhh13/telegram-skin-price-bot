@@ -42,6 +42,8 @@ MESSENGER_COOKIES=<clone account's approved Facebook.com session cookies>
 
 Keep the complete cookie string only in Render's secret environment setting. Do not send it in chat, commit it, or use the primary Facebook account. When both variables are present, the service logs a connection result at startup and retries a disconnected session. A browser login does not transfer to Render by itself. A fresh clone session may be needed if the current session expires. The implementation uses [meta-messenger.js](https://github.com/yumi-team/meta-messenger.js).
 
+Set `MESSENGER_ENABLED=false` to pause the Messenger worker while keeping its existing Render settings for later. Discord stays available on the same service.
+
 Required Render environment variables for Discord:
 
 ```text

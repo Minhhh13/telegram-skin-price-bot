@@ -51,9 +51,13 @@ async function connectIntegrations() {
   } catch (error) { console.error('Discord command setup failed:', error instanceof Error ? error.message : String(error)); }
   try { discordClient = await startDiscordGateway(discordConfig); }
   catch (error) { console.error('Discord channel listener setup failed:', error instanceof Error ? error.message : String(error)); }
-  messengerListener = process.env.MESSENGER_BACKEND === 'go'
-    ? startGoMessengerListener(messengerConfig)
-    : startMessengerSupervisor(messengerConfig);
+  if (process.env.MESSENGER_ENABLED === 'false') {
+    console.log('Messenger listener paused');
+  } else {
+    messengerListener = process.env.MESSENGER_BACKEND === 'go'
+      ? startGoMessengerListener(messengerConfig)
+      : startMessengerSupervisor(messengerConfig);
+  }
 }
 
 const server = createServer(async (req, res) => {
