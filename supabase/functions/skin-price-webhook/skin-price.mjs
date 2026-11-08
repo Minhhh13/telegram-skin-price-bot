@@ -1,11 +1,54 @@
 import { itemNames } from './catalog.mjs';
 import { fuzzyCatalogMatches, fuzzyUniqueMatch } from './catalog-search.mjs';
+import { collectibleSuggestions, resolveCollectible } from './catalog-collectibles.mjs';
 
 const API = 'https://api.openskin.dev/v1';
 const DEFAULT_RATES = [3.6, 3.65, 3.7, 3.75, 3.78, 3.8];
 const MAX_ITEMS = 10;
 const MAX_AGE_MS = 5 * 60 * 1000;
 const PHASE_LOOKUP_CONCURRENCY = 3;
+const exactCatalogNames = new Set(itemNames);
+const foldedCatalogNames = new Map();
+for (const name of itemNames) {
+  const key = name.toLowerCase();
+  const previous = foldedCatalogNames.get(key);
+  if (!previous) foldedCatalogNames.set(key, name);
+  else if (Array.isArray(previous)) previous.push(name);
+  else foldedCatalogNames.set(key, [previous, name]);
+}
+
+function exactCatalogCandidates(query, names = null) {
+  const raw = String(query || '').trim();
+  if (!raw) return [];
+  const wrapped = raw
+    .replace(/^(?:please\s+)?(?:(?:buff(?:163)?\s+)?price\s+(?:(?:for|of)\s+)?|(?:find|check|show)\s+(?:(?:me|the)\s+)?)/i, '')
+    .replace(/\s+(?:(?:buff(?:163)?\s+)?price(?:\s+check)?|on\s+buff(?:163)?)$/i, '');
+  const options = raw === wrapped ? [raw] : [raw, wrapped];
+  if (names) {
+    const allowed = names.map((item) => typeof item === 'string' ? item : item?.name)
+      .filter((name) => typeof name === 'string');
+    for (const option of options) {
+      if (allowed.includes(option)) return [option];
+      const folded = allowed.filter((name) => name.toLowerCase() === option.toLowerCase());
+      if (folded.length) return folded;
+    }
+    return [];
+  }
+  for (const option of options) {
+    if (exactCatalogNames.has(option)) return [option];
+    const folded = foldedCatalogNames.get(option.toLowerCase());
+    if (folded) return Array.isArray(folded) ? folded : [folded];
+  }
+  return [];
+}
+
+function hasCollectibleClass(text) {
+  return /\b(?:stickers?|slabs?|graffiti|charms?|patch(?:es)?|capsules?|music\s+kits?|pins?|packages?)\b|\bcase\s*$/i.test(text);
+}
+
+function isBareCollectibleClass(text) {
+  return /^(?:cases?|stickers?|sticker\s+slabs?|graffiti|charms?|patch(?:es)?|capsules?|music\s+kits?|pins?|packages?)$/i.test(String(text).trim());
+}
 
 export const helpText = `🔎 <b>BUFF163 base price lookup</b>\n\nSend a command in the group:\n<code>/price AK Redline</code>\n\nLeave out wear to see all available wears, or add FT, MW, FN, WW, or BS for one wear. Separate multiple skins with semicolons, commas, or new lines.\n\nAdd <code>rate 3.65</code> for one conversion rate, or <code>rates 3.6, 3.65, 3.7</code> for several. 3.65 means 3,650 VND per CNY. By default the bot shows 3.60–3.80 in 0.05 steps, plus 3.78, two rates per row.\n\nFor Dopplers, include a style such as Phase 2 to quote the lowest listing with that style filter. Exact float, paint seed and sticker filters are not available through this free price feed. Quotes are observed prices, not guaranteed trade prices.`;
 export const floatFilterUnavailable = 'I recognized the float filter, but cannot verify a BUFF163 float-range price. OpenSkin provides the general item ask, not individual BUFF listings by float. Please check the selected float range on BUFF; I will not quote the unfiltered price as its base.';
@@ -279,6 +322,11 @@ export function catalogSuggestionsForText(text, limit = 5, names = null) {
   const agentMatches = rankAgentCandidates(text, entries);
   if (agentMatches.length) return agentMatches.slice(0, Math.max(0, Math.min(5, limit)))
     .map(({ entry }) => entry.name);
+  const collectibles = collectibleSuggestions(text, names || itemNames, limit);
+  if (collectibles.length) return collectibles;
+  // An explicit collectible class with a nonexistent variant or event must not
+  // fall through to the weapon-skin index and suggest a different identity.
+  if (hasCollectibleClass(text)) return [];
   const tokens = [...new Set(requestTokens(text))];
   const wear = tokens.find((token) => wears.has(token)) || '';
   const stattrak = tokens.includes('stattrak');
@@ -481,6 +529,10 @@ function resolveFromCatalog(query, entries) {
 export function aiItemSupportedByText(source, item) {
   const sourceTokens = requestTokens(source);
   const candidate = entryFor(item);
+  if (/^(?:Sticker(?: Slab)?|Sealed Graffiti|(?:Souvenir )?Charm|Patch|(?:StatTrak™ )?Music Kit|Autograph Capsule)\s*\|/.test(item) ||
+      /\b(?:Case|Capsule|Package)$/.test(item)) {
+    return resolveCollectible(source)?.name === item;
+  }
   if (candidate.kind === 'agent') {
     let parts;
     try { parts = parseRequest(source).items; } catch { return false; }
@@ -543,8 +595,16 @@ async function getJson(url, options = {}, fetchFn = fetch) {
 }
 
 export async function resolveItem(query, _fetchFn = fetch, names = null) {
+  const exact = exactCatalogCandidates(query, names);
+  if (exact.length === 1) return { name: exact[0] };
+  if (exact.length > 1) return { ambiguous: exact.slice(0, 5), more: exact.length > 5 };
+  if (isBareCollectibleClass(query)) return { missing: true };
   const entries = names ? names.map((name) => entryFor(typeof name === 'string' ? name : name.name)) : catalog;
   const local = resolveFromCatalog(query, entries);
+  if (local.missing) {
+    const collectible = resolveCollectible(query, names || itemNames);
+    if (collectible) return collectible;
+  }
   // Preserve the exact resolver's explicit-variant handling. The fuzzy index
   // is only a fallback for a likely typo, never a replacement for a resolved
   // wear, a missing finish, or Doppler style selection.
@@ -585,6 +645,8 @@ function normalizeStyleSpelling(query) {
 }
 
 function extractPattern(query) {
+  const exact = exactCatalogCandidates(query);
+  if (exact.length) return { lookup: exact.length === 1 ? exact[0] : query, pattern: '' };
   const text = normalizeStyleSpelling(query);
   const match = text.match(/\b(phase\s*[1-4]|p[1-4]|black\s*pearl|ruby|sapphire|emerald)\b/i);
   if (!match) return { lookup: text, pattern: '' };
@@ -722,7 +784,9 @@ export async function buildParsedReply(parsed, fetchFn = fetch, now = Date.now()
       const suggestions = catalogSuggestionsForText(variant.lookup, 5, names);
       blocks.push(suggestions.length
         ? `<b>${escapeHtml(query)}</b>: possible catalogue matches (price not quoted):\n${suggestions.map((name) => `• ${escapeHtml(name)}`).join('\n')}\nSend the intended item to get its price.`
-        : `<b>${escapeHtml(query)}</b>: no matching item found. Try adding a weapon and part of the finish name.`);
+        : `<b>${escapeHtml(query)}</b>: no matching item found. ${hasCollectibleClass(query)
+          ? 'Add more of the item name or check its variant and event.'
+          : 'Try adding a weapon and part of the finish name.'}`);
     }
   }
   const messages = [];

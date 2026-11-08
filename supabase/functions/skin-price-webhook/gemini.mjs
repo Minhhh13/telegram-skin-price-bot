@@ -30,8 +30,24 @@ export function imageFromBytes(bytes) {
   const png = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
   const webp = bytes.length >= 12 && String.fromCharCode(...bytes.subarray(0, 4)) === 'RIFF' &&
     String.fromCharCode(...bytes.subarray(8, 12)) === 'WEBP';
-  if (!jpeg && !png && !webp) throw new Error('Send a JPEG, PNG, or WebP image.');
-  return { mimeType: jpeg ? 'image/jpeg' : png ? 'image/png' : 'image/webp', base64: toBase64(bytes) };
+  // HEIF uses an ISO BMFF ftyp box. Check the major brand in the bytes rather
+  // than trusting an attachment's extension or MIME (which can be missing).
+  const boxSize = bytes.length >= 16 ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0) : 0;
+  const ftyp = boxSize >= 16 && boxSize <= bytes.length &&
+    String.fromCharCode(...bytes.subarray(4, 8)) === 'ftyp';
+  const brand = ftyp ? String.fromCharCode(...bytes.subarray(8, 12)) : '';
+  const compatibleBrands = [];
+  if (ftyp) {
+    for (let offset = 16; offset + 4 <= boxSize; offset += 4) {
+      compatibleBrands.push(String.fromCharCode(...bytes.subarray(offset, offset + 4)));
+    }
+  }
+  const avif = compatibleBrands.includes('avif') || compatibleBrands.includes('avis');
+  const heic = !avif && /^(?:heic|heix|hevc|hevx|heim|heis|hevm|hevs)$/.test(brand);
+  const heif = !avif && /^(?:heif|mif1)$/.test(brand);
+  if (!jpeg && !png && !webp && !heic && !heif) throw new Error('Send a JPEG, PNG, WebP, HEIC, or HEIF image.');
+  return { mimeType: jpeg ? 'image/jpeg' : png ? 'image/png' : webp ? 'image/webp' : heic ? 'image/heic' : 'image/heif',
+    base64: toBase64(bytes) };
 }
 
 export async function interpretItems({ text = '', image = null, candidates = [], apiKey, fetchFn = fetch }) {

@@ -82,3 +82,116 @@ test('a Chinese BUFF screenshot follows the Discord photo path to the canonical 
   assert.match(sent[0].content, /★ Flip Knife \| Damascus Steel \(Factory New\)/);
   assert.match(sent[0].content, /¥777\.00 CNY/);
 });
+
+test('a Discord PNG without contentType is downloaded and recognized', async () => {
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const attachments = [{ url: 'https://cdn.discordapp.com/attachments/test/screenshot.png',
+    name: 'screenshot.png', contentType: null, size: png.length, width: 900, height: 600 }];
+  attachments.size = 1;
+  const sent = [];
+  const message = {
+    id: '123456789012345681', author: { bot: false, id: '123456789012345678' },
+    guildId: 'our-guild', channelId: 'buff-channel', content: '', attachments,
+    channel: { sendTyping: async () => {} }, reply: async (value) => sent.push(value),
+  };
+  const seen = [];
+  const fetchFn = async (url, options) => {
+    const target = String(url);
+    if (target.includes('cdn.discordapp.com')) {
+      seen.push('cdn');
+      return { ok: true, arrayBuffer: async () => png.buffer };
+    }
+    if (target.includes('generativelanguage.googleapis.com')) {
+      seen.push('gemini');
+      assert.equal(JSON.parse(options.body).contents[0].parts[1].inline_data.mime_type, 'image/png');
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [
+        { text: JSON.stringify({ items: ['AK-47 | Redline (Field-Tested)'] }) },
+      ] } }] }) };
+    }
+    if (target.endsWith('/prices/batch')) {
+      seen.push('price');
+      return { ok: true, json: async () => ({ data: {
+        'AK-47 | Redline (Field-Tested)': {
+          buff: { native_currency: { code: 'CNY', ask: 120 }, updated_at: new Date().toISOString() },
+        },
+      } }) };
+    }
+    throw new Error(`Unexpected URL ${target}`);
+  };
+  assert.equal(await answerChannelMessage(message, {
+    guildId: 'our-guild', channelId: 'buff-channel', applicationId: '1567887370886320190', geminiKey: 'test-key',
+  }, fetchFn), true);
+  assert.deepEqual(seen, ['cdn', 'gemini', 'price']);
+  assert.match(sent[0].content, /AK-47 \| Redline \(Field-Tested\)/);
+});
+
+test('a fake PNG without contentType is rejected before Gemini', async () => {
+  const fake = Uint8Array.from([1, 2, 3, 4]);
+  const attachments = [{ url: 'https://cdn.discordapp.com/attachments/test/fake.png',
+    name: 'fake.png', contentType: null, size: fake.length, width: 900, height: 600 }];
+  attachments.size = 1;
+  const sent = [];
+  const message = {
+    id: '123456789012345682', author: { bot: false, id: '123456789012345678' },
+    guildId: 'our-guild', channelId: 'buff-channel', content: '', attachments,
+    channel: { sendTyping: async () => {} }, reply: async (value) => sent.push(value),
+  };
+  const seen = [];
+  const fetchFn = async (url) => {
+    seen.push(String(url));
+    if (String(url).includes('cdn.discordapp.com')) return { ok: true, arrayBuffer: async () => fake.buffer };
+    throw new Error('Invalid image must not reach Gemini or the price API');
+  };
+  assert.equal(await answerChannelMessage(message, {
+    guildId: 'our-guild', channelId: 'buff-channel', applicationId: '1567887370886320190', geminiKey: 'test-key',
+  }, fetchFn), true);
+  assert.equal(seen.length, 1);
+  assert.match(sent[0].content, /Price lookup is temporarily unavailable/);
+});
+
+test('iPhone HEIC attachments reach Gemini with the MIME detected from their bytes', async () => {
+  const heic = new Uint8Array(20);
+  new DataView(heic.buffer).setUint32(0, heic.length);
+  heic.set(Buffer.from('ftypheic'), 4);
+  heic.set(Buffer.from('mif1'), 16);
+  for (const contentType of ['image/heic', null]) {
+    const attachments = [{ url: 'https://cdn.discordapp.com/attachments/test/photo.heic',
+      name: 'photo.heic', contentType, size: heic.length }];
+    attachments.size = 1;
+    const sent = [];
+    const message = {
+      id: '123456789012345683', author: { bot: false, id: '123456789012345678' },
+      guildId: 'our-guild', channelId: 'buff-channel', content: '', attachments,
+      channel: { sendTyping: async () => {} }, reply: async (value) => sent.push(value),
+    };
+    const seen = [];
+    const fetchFn = async (url, options) => {
+      const target = String(url);
+      if (target.includes('cdn.discordapp.com')) {
+        seen.push('cdn');
+        return { ok: true, arrayBuffer: async () => heic.buffer };
+      }
+      if (target.includes('generativelanguage.googleapis.com')) {
+        seen.push('gemini');
+        assert.equal(JSON.parse(options.body).contents[0].parts[1].inline_data.mime_type, 'image/heic');
+        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [
+          { text: JSON.stringify({ items: ['AK-47 | Redline (Field-Tested)'] }) },
+        ] } }] }) };
+      }
+      if (target.endsWith('/prices/batch')) {
+        seen.push('price');
+        return { ok: true, json: async () => ({ data: {
+          'AK-47 | Redline (Field-Tested)': {
+            buff: { native_currency: { code: 'CNY', ask: 120 }, updated_at: new Date().toISOString() },
+          },
+        } }) };
+      }
+      throw new Error(`Unexpected URL ${target}`);
+    };
+    assert.equal(await answerChannelMessage(message, {
+      guildId: 'our-guild', channelId: 'buff-channel', applicationId: '1567887370886320190', geminiKey: 'test-key',
+    }, fetchFn), true);
+    assert.deepEqual(seen, ['cdn', 'gemini', 'price']);
+    assert.match(sent[0].content, /AK-47 \| Redline \(Field-Tested\)/);
+  }
+});

@@ -13,8 +13,15 @@ export function stripBotMention(text, botId) {
 }
 
 async function firstImage(message, fetchFn) {
-  const attachment = message.attachments.find((item) =>
-    item.size <= 5_000_000 && /^image\/(?:jpeg|png|webp)$/i.test(item.contentType || ''));
+  const attachment = message.attachments.find((item) => {
+    if (item.size > 5_000_000) return false;
+    if (/^image\/(?:jpeg|png|webp|heic|heif)$/i.test(item.contentType || '')) return true;
+    // Discord's content_type is optional. Use its image metadata or filename
+    // only when MIME is absent; imageFromBytes validates the downloaded bytes.
+    return !item.contentType && (
+      /\.(?:jpe?g|png|webp|heic|heif)$/i.test(item.name || '') ||
+      (item.width > 0 && item.height > 0));
+  });
   if (!attachment) return null;
   const url = new URL(attachment.url);
   if (url.protocol !== 'https:' || !['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)) return null;

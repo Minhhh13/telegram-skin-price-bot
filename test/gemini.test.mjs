@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { interpretItems, requestedRates, telegramPhoto } from '../supabase/functions/skin-price-webhook/gemini.mjs';
+import { imageFromBytes, interpretItems, requestedRates, telegramPhoto } from '../supabase/functions/skin-price-webhook/gemini.mjs';
 import { parseRequest, shouldReply } from '../supabase/functions/skin-price-webhook/skin-price.mjs';
 
 test('AI extracts names only; the price still comes from OpenSkin', async () => {
@@ -26,4 +26,22 @@ test('only a photo addressed to the bot is processed', async () => {
   const image = await telegramPhoto([{ file_id: 'a', file_size: 4 }], 'test-token', fakeFetch);
   assert.equal(image.mimeType, 'image/jpeg');
   assert.equal(image.base64, '/9j/2Q==');
+});
+
+test('HEIC and HEIF ftyp major brands are sent with Gemini-supported MIME types', () => {
+  const ftyp = (brand, compatible = 'mif1') => {
+    const bytes = new Uint8Array(20);
+    new DataView(bytes.buffer).setUint32(0, bytes.length);
+    bytes.set(Buffer.from(`ftyp${brand}`), 4);
+    bytes.set(Buffer.from(compatible), 16);
+    return bytes;
+  };
+  assert.equal(imageFromBytes(ftyp('heic')).mimeType, 'image/heic');
+  assert.equal(imageFromBytes(ftyp('heix')).mimeType, 'image/heic');
+  assert.equal(imageFromBytes(ftyp('heif')).mimeType, 'image/heif');
+  assert.equal(imageFromBytes(ftyp('mif1')).mimeType, 'image/heif');
+  assert.throws(() => imageFromBytes(ftyp('avif')), /Send a JPEG/);
+  assert.throws(() => imageFromBytes(ftyp('isom')), /Send a JPEG/);
+  assert.throws(() => imageFromBytes(ftyp('mif1', 'avif')), /Send a JPEG/);
+  assert.throws(() => imageFromBytes(Uint8Array.from(Buffer.from('0000ftypheic'))), /Send a JPEG/);
 });
