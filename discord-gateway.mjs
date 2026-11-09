@@ -1,6 +1,7 @@
 import { Client, Events, GatewayIntentBits, MessageFlags, Options } from 'discord.js';
 import { discordReplyComponents, lookupDiscord } from './discord.mjs';
 import { imageFromBytes } from './supabase/functions/skin-price-webhook/gemini.mjs';
+import { answerProfitChannelMessage } from './profit-discord.mjs';
 
 export function shouldHandleChannelMessage(message, { guildId, channelId }) {
   return Boolean(message && !message.author?.bot && message.guildId === guildId &&
@@ -65,7 +66,10 @@ export async function startDiscordGateway(config) {
     makeCache: Options.cacheWithLimits({ MessageManager: 0 }),
   });
   client.on(Events.MessageCreate, (message) => {
-    void answerChannelMessage(message, config).catch((error) =>
+    void (async () => {
+      if (await answerProfitChannelMessage(message, config)) return;
+      await answerChannelMessage(message, config);
+    })().catch((error) =>
       console.error('Discord channel reply failed:', error instanceof Error ? error.message : String(error)));
   });
   client.once(Events.ClientReady, () => console.log('Discord channel listener connected'));

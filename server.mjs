@@ -4,6 +4,7 @@ import { createDiscordHandler, registerDiscordCommand } from './discord.mjs';
 import { startDiscordGateway } from './discord-gateway.mjs';
 import { startMessengerSupervisor } from './messenger-supervisor.mjs';
 import { startGoMessengerListener } from './messenger-go.mjs';
+import { createProfitDiscordHandler, createProfitService, registerProfitCommands } from './profit-discord.mjs';
 
 const handler = createHandler({
   token: process.env.TELEGRAM_SKIN_BOT_TOKEN || '',
@@ -19,8 +20,14 @@ const discordConfig = {
   channelId: process.env.DISCORD_CHANNEL_ID || '',
   botToken: process.env.DISCORD_BOT_TOKEN || '',
   geminiKey: process.env.GEMINI_API_KEY || '',
+  profitChannelId: process.env.DISCORD_PROFIT_CHANNEL_ID || '',
+  profitOwnerId: process.env.DISCORD_PROFIT_OWNER_ID || '',
+  tradeDeskUrl: process.env.TRADE_DESK_URL || 'https://tradedesk.click',
+  tradeDeskKey: process.env.TRADE_DESK_DISCORD_API_KEY || '',
 };
 const discordHandler = createDiscordHandler(discordConfig);
+const profitService = createProfitService(discordConfig);
+const profitHandler = createProfitDiscordHandler(discordConfig, fetch, profitService);
 const messengerConfig = {
   cookies: process.env.MESSENGER_COOKIES || '',
   threadId: process.env.MESSENGER_THREAD_ID || '',
@@ -30,6 +37,9 @@ let discordClient = null;
 let messengerListener = null;
 
 async function connectIntegrations() {
+  if (discordConfig.profitChannelId && discordConfig.tradeDeskKey) {
+    void profitService.primeRate().catch(() => console.warn('Shared profit conversion rate will load on the next check'));
+  }
   const token = process.env.TELEGRAM_SKIN_BOT_TOKEN;
   const secret = process.env.TELEGRAM_SKIN_WEBHOOK_SECRET;
   const webhook = process.env.TELEGRAM_SKIN_WEBHOOK_URL;
@@ -49,6 +59,10 @@ async function connectIntegrations() {
     await registerDiscordCommand(discordConfig);
     if (discordConfig.botToken) console.log('Discord /buff command registered');
   } catch (error) { console.error('Discord command setup failed:', error instanceof Error ? error.message : String(error)); }
+  try {
+    await registerProfitCommands(discordConfig);
+    if (discordConfig.botToken && discordConfig.profitChannelId) console.log('Discord profit commands registered');
+  } catch { console.error('Discord profit command setup failed'); }
   try { discordClient = await startDiscordGateway(discordConfig); }
   catch (error) { console.error('Discord channel listener setup failed:', error instanceof Error ? error.message : String(error)); }
   if (process.env.MESSENGER_ENABLED === 'false') {
@@ -83,7 +97,10 @@ const server = createServer(async (req, res) => {
     chunks.push(chunk);
   }
   if (req.url === '/discord') {
-    const result = await discordHandler(new Headers(req.headers), Buffer.concat(chunks).toString('utf8'));
+    const body = Buffer.concat(chunks).toString('utf8');
+    let profitTarget = false;
+    try { profitTarget = Boolean(discordConfig.profitChannelId && JSON.parse(body).channel_id === discordConfig.profitChannelId); } catch {}
+    const result = await (profitTarget ? profitHandler : discordHandler)(new Headers(req.headers), body);
     res.writeHead(result.status, { 'content-type': result.status === 200 ? 'application/json' : 'text/plain' });
     res.end(result.body);
     return;

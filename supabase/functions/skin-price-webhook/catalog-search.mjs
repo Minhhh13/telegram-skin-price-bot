@@ -110,8 +110,14 @@ function prepare(names) {
 }
 
 let defaultIndex;
+const customIndexes = new WeakMap();
 function indexFor(names) {
-  if (names !== itemNames) return prepare(names);
+  if (names !== itemNames) {
+    if(!Object.isFrozen(names))return prepare(names);
+    let index=customIndexes.get(names);
+    if(!index){index=prepare(names);customIndexes.set(names,index);}
+    return index;
+  }
   return defaultIndex ||= prepare(itemNames);
 }
 
