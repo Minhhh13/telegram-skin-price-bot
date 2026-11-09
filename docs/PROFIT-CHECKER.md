@@ -1,6 +1,6 @@
 # Trade Desk Discord profit checker
 
-The checker uses the existing bot connection in a separate Discord channel. The existing BUFF channel and `/buff` handler keep their current behavior.
+The checker uses the existing bot connection in an explicit list of profit channels, such as the owner's private channel and the team channel. Both use the same setup, account mapping, shared weekly rate and prepared catalogue cache. The existing BUFF channel and `/buff` handler keep their current behavior.
 
 ## Member flow
 
@@ -26,18 +26,20 @@ Trade Desk remains the source for current personal USD estimates and the shared 
 
 `return on cost % = profit ÷ purchase cost × 100`
 
-Amounts round to the nearest VND after Trade Desk's existing per-item USD-cent rounding. Results show their currency rate and both source timestamps. Green/red requires positive current values from both sources; missing, rejected or stale values remain neutral. Profit is an estimate before extra fees and is not an executable inventory quote.
+Amounts round to the nearest VND after Trade Desk's existing per-item USD-cent rounding. Results show the shared currency rate and buying-rate rows at 3.60, 3.65, 3.70, 3.75 and 3.80. An explicitly requested or custom 3.78 remains supported. Source timestamps and the estimate footer are omitted from the display. Green/red still requires positive current values from both sources internally; missing, rejected or stale values remain neutral.
 
 ## Configuration
 
 Bot Render service:
 
 ```text
-DISCORD_PROFIT_CHANNEL_ID=<new channel ID>
+DISCORD_PROFIT_CHANNEL_IDS=<private channel ID>,<team channel ID>
 DISCORD_PROFIT_OWNER_ID=<owner Discord user ID>
 TRADE_DESK_URL=https://tradedesk.click
 TRADE_DESK_DISCORD_API_KEY=<separate restricted integration credential>
 ```
+
+The legacy `DISCORD_PROFIT_CHANNEL_ID` remains supported and is merged with the comma-separated plural setting, with duplicates removed. Only explicit numeric channel IDs in the configured guild are accepted; names and wildcards do not enable a channel. The bot must have View Channel, Send Messages and Read Message History in each listed channel. One bounded startup diagnostic reports each configured channel ID as ready or missing access without posting messages or changing permissions. A missing optional profit channel does not stop the original BUFF listener.
 
 The existing Discord guild, application, public key and bot token are reused. Trade Desk configures the same integration credential with its approved guild and owner IDs. Keep the integration secret only in service environment settings.
 

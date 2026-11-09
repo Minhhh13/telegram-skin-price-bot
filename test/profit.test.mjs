@@ -49,6 +49,16 @@ test('an absent conversion or unavailable or stale price never shows a green pro
   ]) assert.doesNotMatch(formatProfitItem(item, rate, [3.65], now), /🟢/);
 });
 
+test('profit output is compact while explicit 3.78 requests and freshness checks remain supported', async () => {
+  const text = formatProfitItem(row, { vndPerUsd: 25800 }, undefined, now);
+  assert.doesNotMatch(text, /Sources:|UTC|3\.78/);
+  for (const rate of ['3.60', '3.65', '3.70', '3.75', '3.80']) assert.ok(text.includes(`**${rate}**`));
+  assert.match(formatProfitItem(row, { vndPerUsd: 25800 }, [3.78], now), /\*\*3\.78\*\*/);
+  assert.deepEqual((await resolveProfitRequest('ak redline ft', catalogue)).rates, [3.6, 3.65, 3.7, 3.75, 3.8]);
+  assert.deepEqual((await resolveProfitRequest('ak redline ft rate 3.78', catalogue)).rates, [3.78]);
+  assert.doesNotMatch(formatProfitItem({ ...row, updatedAt: new Date(now - 3 * 3600000).toISOString() }, { vndPerUsd: 25800 }, undefined, now), /🟢/);
+});
+
 test('profit resolution keeps exact Trade Desk wear and Doppler family/phase', async () => {
   assert.equal((await resolveProfitRequest('ak lotus fn', catalogue)).items[0].name, 'AK-47 | Wild Lotus (Factory New)');
   const assumed = await resolveProfitRequest('btf dopp p3', catalogue);
@@ -91,6 +101,7 @@ test('a warm lookup rechecks personal offer and shared conversion for each membe
   });
   const first = await service.lookup(config.profitOwnerId, 'ak redline ft rate 3.65');
   assert.match(first[0].content, /₫3,770,000/);
+  assert.doesNotMatch(first[0].content, /Sources:|UTC|Estimated profit before extra fees|Reference prices; verify the final trade quote/);
   currentUsd = 15000; currentFx = 27000;
   const refreshed = await service.lookup(config.profitOwnerId, 'ak redline ft rate 3.65');
   assert.match(refreshed[0].content, /₫4,050,000/);
