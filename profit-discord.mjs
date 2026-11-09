@@ -1,8 +1,9 @@
 import { verifyDiscord, splitDiscord } from './discord.mjs';
-import { createTradeDeskClient, formatProfitItem, identityId, itemLabel, profitQuery, queryFooter, queryFromMessage, resolveProfitRequest, TradeDeskError } from './profit.mjs';
-import { aiItemSupportedByText, catalogHintsForText, DEFAULT_RATES, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
+import { createTradeDeskClient, formatProfitItem, identityId, itemLabel, PROFIT_DEFAULT_RATES, profitBuyingRates, profitQuery, queryFooter, queryFromMessage, resolveProfitRequest, TradeDeskError } from './profit.mjs';
+import { aiItemSupportedByText, catalogHintsForText, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
 import { interpretItems, requestedRates } from './supabase/functions/skin-price-webhook/gemini.mjs';
 import { firstDiscordImage } from './discord-images.mjs';
+import { isProfitChannel, profitChannelIds } from './profit-channels.mjs';
 
 const api = 'https://discord.com/api/v10';
 const noMentions = { parse: [] };
@@ -53,15 +54,15 @@ export function createProfitService(config, fetchFn = fetch) {
     if (selectedId) {
       const item = catalogue.byId.get(selectedId);
       if (!item) throw new TradeDeskError('That choice is no longer available. Search again.', 400);
-      request = { items: [item], rates: parseRequest(query).rates, unresolved: [] };
+      request = { items: [item], rates: profitBuyingRates(parseRequest(query).rates), unresolved: [] };
       query = itemLabel(item) + ` rates ${request.rates.join(', ')}`;
     } else {
       if (image) {
         if (requestsFloatFilter(query)) throw new TradeDeskError('Exact float-range prices are unavailable. Enter a wear such as FN, MW, FT, WW or BS.', 400);
-        try { request = { items: [], rates: requestedRates(query, parseRequest), unresolved: [] }; }
+        try { request = { items: [], rates: profitBuyingRates(requestedRates(query, parseRequest)), unresolved: [] }; }
         catch (error) { throw new TradeDeskError(error.message, 400); }
         if (request.rates.some((rate) => !/^\d+(?:\.\d{1,3})?$/.test(String(rate)))) throw new TradeDeskError('Use at most three decimal places for a CNY buying rate.', 400);
-      } else request = query.trim() ? await resolveProfitRequest(query, catalogue) : { items: [], rates: DEFAULT_RATES, unresolved: [] };
+      } else request = query.trim() ? await resolveProfitRequest(query, catalogue) : { items: [], rates: PROFIT_DEFAULT_RATES, unresolved: [] };
       if (config.geminiKey && (image || !request.items.length)) {
         let aiItems = await interpretItems({ text: rawText, image, candidates: catalogHintsForText(query), apiKey: config.geminiKey, fetchFn })
           .catch(() => null);
@@ -86,11 +87,11 @@ export function createProfitService(config, fetchFn = fetch) {
       const quotes = result.items.filter((item) => requested.has(identityId(item)));
       if (quotes.length !== request.items.length || new Set(quotes.map(identityId)).size !== requested.size) throw new TradeDeskError('Trade Desk could not confirm every requested item. Please refresh.');
       const header = `**Your Trade Desk profit check**\n${Number(result.rate?.vndPerUsd) > 0
-        ? `Weekly USD→VND: **${Number(result.rate.vndPerUsd).toLocaleString('en-US')}**${result.rate.updatedAt ? ` · set ${new Date(result.rate.updatedAt).toISOString().slice(0, 16).replace('T', ' ')} UTC` : ''}`
+        ? `Weekly USD→VND: **${Number(result.rate.vndPerUsd).toLocaleString('en-US')}**`
         : 'Weekly USD→VND: not set'}`;
       const blocks = quotes.map((item) => formatProfitItem({ ...item,
         assumedFactoryNew: request.assumedFactoryNew?.has(identityId(item)) === true }, result.rate, request.rates));
-      for (const chunk of splitDiscord([header, ...blocks, 'Estimated profit before extra fees. Reference prices; verify the final trade quote.'].join('\n\n'), 1900 - queryFooter(query).length)) {
+      for (const chunk of splitDiscord([header, ...blocks].join('\n\n'), 1900 - queryFooter(query).length)) {
         messages.push({ content: chunk + queryFooter(query), components: resultControls(isOwner(userId)) });
       }
     }
@@ -113,7 +114,8 @@ export function createProfitService(config, fetchFn = fetch) {
   };
 }
 
-export function createProfitDiscordHandler(config, fetchFn = fetch, service = createProfitService(config, fetchFn)) {
+export function createProfitDiscordHandler(config, fetchFn = fetch, service = null) {
+  if (profitChannelIds(config).length) service ||= createProfitService(config, fetchFn);
   const response = (value) => ({ status: 200, body: JSON.stringify(value) });
   const send = async (interaction, messages) => {
     for (const [index, message] of messages.entries()) {
@@ -136,7 +138,7 @@ export function createProfitDiscordHandler(config, fetchFn = fetch, service = cr
     try { interaction = JSON.parse(body); } catch { return { status: 400, body: 'Invalid JSON' }; }
     if (interaction.type === 1) return response({ type: 1 });
     if (interaction.application_id !== config.applicationId) return { status: 401, body: 'Wrong application' };
-    if (!config.profitChannelId || interaction.guild_id !== config.guildId || interaction.channel_id !== config.profitChannelId)
+    if (!isProfitChannel(config, interaction.guild_id, interaction.channel_id))
       return response(privateReply('Use the Trade Desk profit checker channel for this command.'));
     const userId = actorId(interaction);
     if (!/^\d{17,20}$/.test(userId)) return response(privateReply('Your Discord account could not be confirmed.'));
@@ -198,7 +200,7 @@ export function createProfitDiscordHandler(config, fetchFn = fetch, service = cr
 }
 
 export async function answerProfitChannelMessage(message, config, service = null, fetchFn = fetch) {
-  if (!config.profitChannelId || !message || message.author?.bot || message.guildId !== config.guildId || message.channelId !== config.profitChannelId) return false;
+  if (!message || message.author?.bot || !isProfitChannel(config, message.guildId, message.channelId)) return false;
   const content = String(message.content || '').trim();
   if ((!content && !message.attachments?.size) || content.startsWith('/')) return false;
   if (/^!ratechange\b/i.test(content)) {
@@ -241,7 +243,7 @@ export async function answerProfitChannelMessage(message, config, service = null
 }
 
 export async function registerProfitCommands(config, fetchFn = fetch) {
-  if (!config.profitChannelId || !config.applicationId || !config.guildId || !config.botToken) return;
+  if (!profitChannelIds(config).length || !config.applicationId || !config.guildId || !config.botToken) return;
   for (const command of [
     { name: 'profit', description: 'Check your Trade Desk offer and estimated VND profit', options: [{ name: 'items', description: 'Skin names (up to 10), optionally rate 3.65', type: 3, required: true }] },
     { name: 'setup', description: 'Set up your team Trade Desk Account ID privately' },

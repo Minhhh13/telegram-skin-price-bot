@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { catalogSuggestionsForText, DEFAULT_RATES, extractItemVariant, parseRequest, requestsFloatFilter, resolveItem } from './supabase/functions/skin-price-webhook/skin-price.mjs';
 
 const phases = new Set(['Phase 1', 'Phase 2', 'Phase 3', 'Phase 4', 'Ruby', 'Sapphire', 'Emerald', 'Black Pearl']);
+export const PROFIT_DEFAULT_RATES = Object.freeze(DEFAULT_RATES.filter((rate) => rate !== 3.78));
+export const profitBuyingRates = (rates) => rates === DEFAULT_RATES ? PROFIT_DEFAULT_RATES : rates;
 export class TradeDeskError extends Error {
   constructor(message, status = 503) { super(message); this.status = status; }
 }
@@ -62,6 +64,7 @@ export async function resolveProfitRequest(text, catalogue) {
   let parsed;
   try { parsed = parseRequest(String(text).replace(/^!profit\b/i, '').trim()); }
   catch (error) { throw new TradeDeskError(error.message, 400); }
+  parsed.rates = profitBuyingRates(parsed.rates);
   if (parsed.rates.some((rate) => !decimalUnits(rate, 3))) throw new TradeDeskError('Use at most three decimal places for a CNY buying rate.', 400);
   const selected = new Map(), unresolved = [], assumedFactoryNew = new Set();
   const expand = (name, pattern = '') => catalogue.items.filter((item) => item.name === name &&
@@ -136,8 +139,7 @@ export function calculateProfit({ usdCents, cny, vndPerUsd, buyingRate }) {
 const money = (value) => `₫${Math.round(value).toLocaleString('en-US')}`;
 const centsText = (value) => `${(value / 100n).toLocaleString('en-US')}.${String(value % 100n).padStart(2, '0')}`;
 const safe = (text) => String(text).replace(/@/g, '@\u200b').replace(/([\\`*_~|])/g, '\\$1');
-const observed = (value) => Number.isFinite(Date.parse(value || '')) ? new Date(value).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'unavailable';
-export function formatProfitItem(item, rate, rates = DEFAULT_RATES, now = Date.now()) {
+export function formatProfitItem(item, rate, rates = PROFIT_DEFAULT_RATES, now = Date.now()) {
   const usd = Number(item.usdCents), cny = Number(item.buff?.cny), fx = Number(rate?.vndPerUsd);
   const sourceCurrent = (value) => Number.isFinite(Date.parse(value || '')) && now - Date.parse(value) <= 2 * 60 * 60_000 && Date.parse(value) <= now + 5 * 60_000;
   const tdAvailable = item.available === true && usd > 0 && Number.isSafeInteger(usd);
@@ -165,7 +167,6 @@ export function formatProfitItem(item, rate, rates = DEFAULT_RATES, now = Date.n
       lines.push(`Break-even buying rate: **${thousandths / 1000n}.${String(thousandths % 1000n).padStart(3, '0')}**`);
     }
   }
-  lines.push(`Sources: Trade Desk ${observed(item.updatedAt)} · BUFF ${observed(item.buff?.updatedAt)}`);
   return lines.join('\n');
 }
 

@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { answerProfitChannelMessage, createProfitDiscordHandler, createProfitService, registerProfitCommands } from '../profit-discord.mjs';
 import { queryFooter } from '../profit.mjs';
+import { isProfitChannel } from '../profit-channels.mjs';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const config = { publicKey: publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex'),
   applicationId: '123456789012345678', guildId: '123456789012345679', profitChannelId: '123456789012345680',
   profitOwnerId: '123456789012345681', tradeDeskUrl: 'https://tradedesk.test', tradeDeskKey: 'test-secret', botToken: 'test-token' };
 const userId = '123456789012345682';
+const secondChannel = '123456789012345683';
 function signed(data) {
   const body = JSON.stringify({ application_id: config.applicationId, guild_id: config.guildId, channel_id: config.profitChannelId,
     member: { user: { id: userId } }, token: 'interaction-test-token', ...data });
@@ -67,10 +69,10 @@ test('setup rejects email addresses and malformed IDs before any backend call', 
 });
 
 test('setup enables automatic text and photo checks while unconfigured photos spend no price or AI call', async () => {
-  const state = { linked: false, quotes: 0, gemini: 0, images: 0 }, replies = [];
+  const state = { linked: false, quotes: 0, gemini: 0, images: 0, catalogues: 0 }, replies = [];
   const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const identity = { game: '730', name: 'AK-47 | Redline (Field-Tested)', phase: null };
-  const photoConfig = { ...config, geminiKey: 'test-photo-key' };
+  const photoConfig = { ...config, profitChannelId: '', profitChannelIds: `${config.profitChannelId},${secondChannel}`, geminiKey: 'test-photo-key' };
   const fetchFn = async (url, options) => {
     url = String(url);
     if (url.endsWith('/status')) return { ok: true, json: async () => ({ linked: state.linked, rate: { vndPerUsd: 25800 } }) };
@@ -78,7 +80,7 @@ test('setup enables automatic text and photo checks while unconfigured photos sp
       assert.equal(JSON.parse(options.body).discordUserId, userId); state.linked = true;
       return { ok: true, json: async () => ({ linked: true }) };
     }
-    if (url.endsWith('/catalogue')) return { ok: true, json: async () => ({ version: 'one', items: [identity], ttlMs: 60000 }) };
+    if (url.endsWith('/catalogue')) { state.catalogues++; return { ok: true, json: async () => ({ version: 'one', items: [identity], ttlMs: 60000 }) }; }
     if (url.endsWith('/quotes')) {
       state.quotes++; const body = JSON.parse(options.body);
       assert.equal(body.discordUserId, userId); assert.deepEqual(body.items, [identity]);
@@ -96,16 +98,16 @@ test('setup enables automatic text and photo checks while unconfigured photos sp
   };
   const service = createProfitService(photoConfig, fetchFn);
   const attachments = [{ name: 'screenshot.png', contentType: null, size: imageBytes.length, url: 'https://cdn.discordapp.com/attachments/test/photo.png' }]; attachments.size = 1;
-  const message = { id: 'message', author: { id: userId, bot: false }, guildId: config.guildId, channelId: config.profitChannelId,
+  const message = { id: 'message', author: { id: userId, bot: false }, guildId: config.guildId, channelId: secondChannel,
     content: '这个多少钱', attachments, reply: async (value) => replies.push(value),
     channel: { sendTyping: async () => {}, send: async (value) => replies.push(value) } };
   await answerProfitChannelMessage(message, photoConfig, service, fetchFn);
   assert.match(replies.at(-1).content, /Set up your team/);
   assert.deepEqual([state.quotes, state.gemini, state.images], [0, 0, 0]);
   const handler = createProfitDiscordHandler(photoConfig, fetchFn, service);
-  const setup = signed({ type: 5, data: { custom_id: 'tdprofit:setup-submit', components: [{ type: 18, component: { custom_id: 'account_id', value: '11111111-1111-4111-8111-111111111111' } }] } });
+  const setup = signed({ type: 5, channel_id: secondChannel, data: { custom_id: 'tdprofit:setup-submit', components: [{ type: 18, component: { custom_id: 'account_id', value: '11111111-1111-4111-8111-111111111111' } }] } });
   await handler(setup.headers, setup.body); await flush();
-  await answerProfitChannelMessage({ ...message, content: 'ak redline ft', attachments: { size: 0 } }, photoConfig, service, fetchFn);
+  await answerProfitChannelMessage({ ...message, channelId: config.profitChannelId, content: 'ak redline ft', attachments: { size: 0 } }, photoConfig, service, fetchFn);
   assert.match(replies.at(-1).content, /\$145\.00.*₫3,741,000/);
   assert.equal(state.gemini, 0);
   await answerProfitChannelMessage(message, photoConfig, service, fetchFn);
@@ -120,6 +122,40 @@ test('setup enables automatic text and photo checks while unconfigured photos sp
   await answerProfitChannelMessage({ ...message, content: 'rate 9' }, photoConfig, service, fetchFn);
   assert.match(replies.at(-1).content, /Rates must be 2\.00/);
   assert.deepEqual([state.quotes, state.gemini], [3, 2]);
+  assert.equal(state.catalogues, 1, 'both channels reuse the same prepared catalogue');
+  const repliesBefore = replies.length;
+  assert.equal(await answerProfitChannelMessage({ ...message, channelId: '123456789012345699' }, photoConfig, service, fetchFn), false);
+  assert.equal(await answerProfitChannelMessage({ ...message, guildId: '123456789012345699' }, photoConfig, service, fetchFn), false);
+  assert.equal(replies.length, repliesBefore);
+});
+
+test('signed setup and refresh work in both listed channels and reject other guilds or channels', async () => {
+  const multi = { ...config, profitChannelId: '', profitChannelIds: [config.profitChannelId, secondChannel] };
+  const seen = [], service = { lookup: async (actor, query) => { seen.push({ actor, query }); return [{ content: 'Personal result', components: [] }]; },
+    errorResponse: () => ({ content: 'Unavailable', components: [] }) };
+  const handler = createProfitDiscordHandler(multi, async () => ({ ok: true }), service);
+  for (const channel_id of [config.profitChannelId, secondChannel]) {
+    const setup = signed({ type: 2, channel_id, data: { name: 'setup' } });
+    assert.equal(JSON.parse((await handler(setup.headers, setup.body)).body).type, 9);
+    const refresh = signed({ type: 3, channel_id, data: { custom_id: 'tdprofit:refresh' },
+      message: { author: { id: config.applicationId, bot: true }, content: 'Result' + queryFooter('ak redline ft') } });
+    assert.equal(JSON.parse((await handler(refresh.headers, refresh.body)).body).type, 5);
+  }
+  await flush(); assert.equal(seen.length, 2);
+  for (const location of [{ channel_id: '123456789012345699' }, { channel_id: secondChannel, guild_id: '123456789012345699' }]) {
+    const request = signed({ type: 2, ...location, data: { name: 'setup' } });
+    assert.equal(JSON.parse((await handler(request.headers, request.body)).body).type, 4);
+    assert.equal(isProfitChannel(multi, JSON.parse(request.body).guild_id, JSON.parse(request.body).channel_id), false);
+  }
+  assert.equal(seen.length, 2);
+});
+
+test('no explicit profit channel creates no integration client or commands', async () => {
+  const disabled = { ...config, profitChannelId: '', profitChannelIds: '*', tradeDeskUrl: 'not a URL' };
+  const handler = createProfitDiscordHandler(disabled, async () => { throw new Error('unexpected fetch'); });
+  const setup = signed({ type: 2, data: { name: 'setup' } });
+  assert.equal(JSON.parse((await handler(setup.headers, setup.body)).body).type, 4);
+  await registerProfitCommands(disabled, async () => { throw new Error('unexpected registration'); });
 });
 
 test('only the configured owner can open or submit the weekly rate form', async () => {
@@ -225,7 +261,7 @@ test('unsupported attachment-only posts spend no Gemini or catalogue call and ty
 
 test('new command registration adds individual commands without overwriting the existing BUFF command', async () => {
   const names = [];
-  await registerProfitCommands(config, async (_url, options) => {
+  await registerProfitCommands({ ...config, profitChannelId: '', profitChannelIds: secondChannel }, async (_url, options) => {
     assert.equal(options.method, 'POST'); names.push(JSON.parse(options.body).name); return { ok: true };
   });
   assert.deepEqual(names, ['profit', 'setup', 'profitsetup', 'ratechange']);
