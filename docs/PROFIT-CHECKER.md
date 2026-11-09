@@ -8,6 +8,7 @@ The checker uses the existing bot connection in an explicit list of profit chann
 - After setup, posting a skin name or supported photo in the profit channel automatically returns the posting member's personal prices and profit. The first automatic reply mentions only that member; later chunks do not ping again. No command or extra button is needed. Photos use the existing Gemini image-reading path; clear text matches stay local.
 - `/profit items: ak redline ft` remains an optional private lookup. Each lookup and button click uses that Discord member's configured Account ID.
 - **Refresh** rechecks the member's current Trade Desk account rate and the shared conversion. **Custom buying rate** accepts `3.65` or `3650` VND per CNY. **Share result** publishes the displayed snapshot only after the member clicks it.
+- **Customer quote** opens a private item and selling-rate form in either profit channel. It uses the BUFF CNY price already displayed, accepts a custom rate such as `3.65`, `3650` or `3.615`, and returns only the exact item, final VND selling price and BUFF listing link. Profit, buying/selling rates, USD conversion and Trade Desk account details are excluded from the customer text. **Copy on phone** opens that text in a selectable field for the Discord iPhone app. Copying makes no new price or AI request; use **Refresh** first when a new price is needed.
 - An ambiguous request offers up to five actual Trade Desk identities. Phase, wear, StatTrak and Souvenir remain part of the exact price identity.
 
 ## Owner flow
@@ -47,4 +48,4 @@ The bot calls the Trade Desk `/api/integrations/discord/` adapter over HTTPS wit
 
 ## Verification
 
-`node --test test/profit.test.mjs test/profit-discord.test.mjs` checks currency units, return on cost, missing/stale prices, exact variants, cache reuse, member separation, fresh account/conversion values, owner-only rate changes, signature/channel validation, private UUID setup, automatic text/photo lookup, the pre-setup price/AI gate, bot-owned button context and additive command registration. The full `npm test` suite protects the existing BUFF, Telegram and Messenger behavior.
+`node --test test/profit.test.mjs test/profit-discord.test.mjs test/profit-customer.test.mjs` checks currency units, return on cost, missing/stale prices, exact variants, cache reuse, member separation, fresh account/conversion values, owner-only rate changes, signature/channel validation, private UUID setup, automatic text/photo lookup, the pre-setup price/AI gate, bot-owned button context, private customer quotes and mobile copying, and additive command registration. The full `npm test` suite protects the existing BUFF, Telegram and Messenger behavior.

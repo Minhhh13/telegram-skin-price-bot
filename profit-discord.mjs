@@ -4,6 +4,7 @@ import { aiItemSupportedByText, catalogHintsForText, parseRequest, requestsFloat
 import { interpretItems, requestedRates } from './supabase/functions/skin-price-webhook/gemini.mjs';
 import { firstDiscordImage } from './discord-images.mjs';
 import { isProfitChannel, profitChannelIds } from './profit-channels.mjs';
+import { profitCustomerButton, profitCustomerInteraction } from './profit-customer.mjs';
 
 const api = 'https://discord.com/api/v10';
 const noMentions = { parse: [] };
@@ -25,8 +26,9 @@ const modalValue = (components, id) => {
 };
 const actorId = (interaction) => interaction.member?.user?.id || interaction.user?.id || '';
 const safe = (value) => String(value).replace(/@/g, '@\u200b').replace(/([\\`*_~|])/g, '\\$1');
-const resultControls = (owner) => [{ type: 1, components: [
+const resultControls = (owner, content) => [{ type: 1, components: [
   { type: 2, style: 2, custom_id: 'tdprofit:refresh', label: 'Refresh' },
+  ...[profitCustomerButton(content)].filter(Boolean),
   { type: 2, style: 2, custom_id: 'tdprofit:buy-rate', label: 'Custom buying rate' },
   { type: 2, style: 2, custom_id: 'tdprofit:share', label: 'Share result' },
   ...(owner ? [{ type: 2, style: 2, custom_id: 'tdprofit:rate-open', label: 'Change USD rate' }] : []),
@@ -93,7 +95,8 @@ export function createProfitService(config, fetchFn = fetch) {
       const blocks = quotes.map((item) => formatProfitItem({ ...item,
         assumedFactoryNew: request.assumedFactoryNew?.has(identityId(item)) === true }, result.rate, request.rates));
       for (const chunk of splitDiscord([header, ...blocks].join('\n\n'), replyLimit - queryFooter(query).length)) {
-        messages.push({ content: chunk + queryFooter(query), components: resultControls(isOwner(userId)) });
+        const content = chunk + queryFooter(query);
+        messages.push({ content, components: resultControls(isOwner(userId), content) });
       }
     }
     for (const entry of request.unresolved) {
@@ -143,6 +146,8 @@ export function createProfitDiscordHandler(config, fetchFn = fetch, service = nu
       return response(privateReply('Use the Trade Desk profit checker channel for this command.'));
     const userId = actorId(interaction);
     if (!/^\d{17,20}$/.test(userId)) return response(privateReply('Your Discord account could not be confirmed.'));
+    const customer = profitCustomerInteraction(interaction, config.applicationId);
+    if (customer) return response(customer);
     const name = interaction.data?.name, id = interaction.data?.custom_id;
     if (interaction.type === 2 && ['setup', 'profitsetup'].includes(name) || interaction.type === 3 && ['tdprofit:setup', 'tdprofit:link'].includes(id)) return response(setupModal());
     if (interaction.type === 2 && name === 'ratechange' || interaction.type === 3 && id === 'tdprofit:rate-open') {
