@@ -23,13 +23,13 @@ export function createTradeDeskClient({ url, apiKey, guildId }, fetchFn = fetch,
       signal: AbortSignal.timeout(path === 'quotes' ? 40_000 : path === 'catalogue' ? 20_000 : 9000),
     });
     if (!response.ok) throw new TradeDeskError(response.status === 403 || response.status === 401
-      ? 'Link your active Trade Desk account to use the profit checker.'
+      ? 'Set up an active team Account ID to use the profit checker.'
       : 'Trade Desk prices are temporarily unavailable. Please try again shortly.', response.status);
     return response.json();
   };
   return {
     status: (actor) => call('status', actor),
-    startLink: (actor, identifier) => call('link-start', actor, { identifier }),
+    setup: (actor, accountId) => call('setup', actor, { accountId }),
     quotes: (actor, items) => call('quotes', actor, { items }),
     rate: (actor, vndPerUsd) => call('rate', actor, vndPerUsd === undefined ? {} : { vndPerUsd }),
     async catalogue(actor) {

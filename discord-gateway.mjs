@@ -1,6 +1,6 @@
 import { Client, Events, GatewayIntentBits, MessageFlags, Options } from 'discord.js';
 import { discordReplyComponents, lookupDiscord } from './discord.mjs';
-import { imageFromBytes } from './supabase/functions/skin-price-webhook/gemini.mjs';
+import { firstDiscordImage } from './discord-images.mjs';
 import { answerProfitChannelMessage } from './profit-discord.mjs';
 
 export function shouldHandleChannelMessage(message, { guildId, channelId }) {
@@ -13,31 +13,13 @@ export function stripBotMention(text, botId) {
   return String(text || '').replace(new RegExp(`<@!?${String(botId || '').replace(/\D/g, '')}>`, 'g'), '').trim();
 }
 
-async function firstImage(message, fetchFn) {
-  const attachment = message.attachments.find((item) => {
-    if (item.size > 5_000_000) return false;
-    if (/^image\/(?:jpeg|png|webp|heic|heif)$/i.test(item.contentType || '')) return true;
-    // Discord's content_type is optional. Use its image metadata or filename
-    // only when MIME is absent; imageFromBytes validates the downloaded bytes.
-    return !item.contentType && (
-      /\.(?:jpe?g|png|webp|heic|heif)$/i.test(item.name || '') ||
-      (item.width > 0 && item.height > 0));
-  });
-  if (!attachment) return null;
-  const url = new URL(attachment.url);
-  if (url.protocol !== 'https:' || !['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)) return null;
-  const response = await fetchFn(url, { signal: AbortSignal.timeout(9000) });
-  if (!response.ok) throw new Error(`Discord image HTTP ${response.status}`);
-  return imageFromBytes(new Uint8Array(await response.arrayBuffer()));
-}
-
 export async function answerChannelMessage(message, config, fetchFn = fetch) {
   if (!shouldHandleChannelMessage(message, config)) return false;
   const text = stripBotMention(message.content, config.applicationId);
   if (text.startsWith('/')) return false;
   try {
     await message.channel.sendTyping();
-    const image = config.geminiKey ? await firstImage(message, fetchFn) : null;
+    const image = config.geminiKey ? await firstDiscordImage(message, fetchFn) : null;
     const chunks = await lookupDiscord(text, image, config.geminiKey, fetchFn, message.content);
     for (const [index, content] of chunks.entries()) {
       const userId = message.author?.id;
@@ -59,7 +41,7 @@ export async function answerChannelMessage(message, config, fetchFn = fetch) {
   return true;
 }
 
-export async function startDiscordGateway(config) {
+export async function startDiscordGateway(config, profitService) {
   if (!config.botToken || !config.guildId || !config.channelId) return null;
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
@@ -67,7 +49,7 @@ export async function startDiscordGateway(config) {
   });
   client.on(Events.MessageCreate, (message) => {
     void (async () => {
-      if (await answerProfitChannelMessage(message, config)) return;
+      if (await answerProfitChannelMessage(message, config, profitService)) return;
       await answerChannelMessage(message, config);
     })().catch((error) =>
       console.error('Discord channel reply failed:', error instanceof Error ? error.message : String(error)));

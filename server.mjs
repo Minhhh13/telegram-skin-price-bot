@@ -63,7 +63,7 @@ async function connectIntegrations() {
     await registerProfitCommands(discordConfig);
     if (discordConfig.botToken && discordConfig.profitChannelId) console.log('Discord profit commands registered');
   } catch { console.error('Discord profit command setup failed'); }
-  try { discordClient = await startDiscordGateway(discordConfig); }
+  try { discordClient = await startDiscordGateway(discordConfig, profitService); }
   catch (error) { console.error('Discord channel listener setup failed:', error instanceof Error ? error.message : String(error)); }
   if (process.env.MESSENGER_ENABLED === 'false') {
     console.log('Messenger listener paused');

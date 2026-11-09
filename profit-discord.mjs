@@ -1,16 +1,18 @@
 import { verifyDiscord, splitDiscord } from './discord.mjs';
 import { createTradeDeskClient, formatProfitItem, identityId, itemLabel, profitQuery, queryFooter, queryFromMessage, resolveProfitRequest, TradeDeskError } from './profit.mjs';
-import { parseRequest } from './supabase/functions/skin-price-webhook/skin-price.mjs';
+import { aiItemSupportedByText, catalogHintsForText, DEFAULT_RATES, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
+import { interpretItems, requestedRates } from './supabase/functions/skin-price-webhook/gemini.mjs';
+import { firstDiscordImage } from './discord-images.mjs';
 
 const api = 'https://discord.com/api/v10';
 const noMentions = { parse: [] };
-const setupButton = { type: 1, components: [{ type: 2, style: 1, custom_id: 'tdprofit:link', label: 'Link Trade Desk' }] };
+const setupButton = { type: 1, components: [{ type: 2, style: 1, custom_id: 'tdprofit:setup', label: 'Set up Account ID' }] };
 const privateReply = (content, components = []) => ({ type: 4, data: { content, components, flags: 68, allowed_mentions: noMentions } });
 const input = (custom_id, label, placeholder, max_length = 254, value) => ({ type: 18, label, component: {
   type: 4, custom_id, style: 1, required: true, placeholder, max_length, ...(value ? { value } : {}),
 } });
-const linkModal = () => ({ type: 9, data: { custom_id: 'tdprofit:link-submit', title: 'Link your Trade Desk account', components: [
-  input('identifier', 'Trade Desk email address or Account ID', 'Your email or Account ID'),
+const setupModal = () => ({ type: 9, data: { custom_id: 'tdprofit:setup-submit', title: 'Set up your Trade Desk Account ID', components: [
+  input('account_id', 'Trade Desk Account ID', 'Paste your team Account ID', 36),
 ] } });
 const modalValue = (components, id) => {
   for (const outer of components || []) {
@@ -37,9 +39,15 @@ export function createProfitService(config, fetchFn = fetch) {
   const client = createTradeDeskClient({ url: config.tradeDeskUrl, apiKey: config.tradeDeskKey, guildId: config.guildId }, fetchFn);
   let lastRate = null;
   const isOwner = (userId) => Boolean(config.profitOwnerId && userId === config.profitOwnerId);
-  const linkRequired = () => ({ content: 'Link your Trade Desk account once to check your personal prices and profit.', components: [setupButton] });
-  async function lookup(userId, query, selectedId = '') {
-    if (!query || query.length > 1100) throw new TradeDeskError('Send a skin request of at most 1100 characters.', 400);
+  const setupRequired = () => ({ content: 'Set up your team Trade Desk Account ID once, then send skin names or photos here.', components: [setupButton] });
+  async function lookup(userId, query = '', selectedId = '', { image = null, loadImage = null, rawText = query } = {}) {
+    if (query.length > 1100) throw new TradeDeskError('Send a skin request of at most 1100 characters.', 400);
+    const status = await client.status(userId);
+    if (!status.linked) return [setupRequired()];
+    lastRate = status.rate || lastRate;
+    if (!query.trim() && !selectedId && !image && loadImage && !config.geminiKey) return [{ content: 'Photo recognition is unavailable. Please type the item name.', components: [] }];
+    if (!image && loadImage && config.geminiKey) image = await loadImage();
+    if (!query.trim() && !selectedId && !image) return [{ content: 'Send a supported photo (JPEG, PNG, WebP, HEIC or HEIF) or type the item name.', components: [] }];
     const catalogue = await client.catalogue(userId);
     let request;
     if (selectedId) {
@@ -47,12 +55,29 @@ export function createProfitService(config, fetchFn = fetch) {
       if (!item) throw new TradeDeskError('That choice is no longer available. Search again.', 400);
       request = { items: [item], rates: parseRequest(query).rates, unresolved: [] };
       query = itemLabel(item) + ` rates ${request.rates.join(', ')}`;
-    } else request = await resolveProfitRequest(query, catalogue);
-    const messages = [];
-    if (!request.items.length) {
-      const status = await client.status(userId);
-      if (!status.linked) return [linkRequired()];
+    } else {
+      if (image) {
+        if (requestsFloatFilter(query)) throw new TradeDeskError('Exact float-range prices are unavailable. Enter a wear such as FN, MW, FT, WW or BS.', 400);
+        try { request = { items: [], rates: requestedRates(query, parseRequest), unresolved: [] }; }
+        catch (error) { throw new TradeDeskError(error.message, 400); }
+        if (request.rates.some((rate) => !/^\d+(?:\.\d{1,3})?$/.test(String(rate)))) throw new TradeDeskError('Use at most three decimal places for a CNY buying rate.', 400);
+      } else request = query.trim() ? await resolveProfitRequest(query, catalogue) : { items: [], rates: DEFAULT_RATES, unresolved: [] };
+      if (config.geminiKey && (image || !request.items.length)) {
+        let aiItems = await interpretItems({ text: rawText, image, candidates: catalogHintsForText(query), apiKey: config.geminiKey, fetchFn })
+          .catch(() => null);
+        if (aiItems && !image) aiItems = aiItems.filter((candidate) => aiItemSupportedByText(query, candidate));
+        if (aiItems?.length) {
+          query = `${aiItems.join('; ')} rates ${request.rates.join(', ')}`;
+          if (query.length > 1100) throw new TradeDeskError('That photo contains too many long item names. Send a smaller group of items.', 400);
+          request = await resolveProfitRequest(query, catalogue);
+        } else if (image && query.trim()) {
+          try { request = await resolveProfitRequest(query, catalogue); }
+          catch { return [{ content: 'I could not read an item from that photo. Please send a clear item title or type its name.', components: [] }]; }
+        }
+      }
+      if (!query.trim() || !request.items.length && !request.unresolved.length) return [{ content: 'I could not read an item from that photo. Please send a clear item title or type its name.', components: [] }];
     }
+    const messages = [];
     if (request.items.length) {
       const result = await client.quotes(userId, request.items);
       if (!result || !Array.isArray(result.items)) throw new TradeDeskError('Trade Desk prices are temporarily unavailable.');
@@ -78,7 +103,7 @@ export function createProfitService(config, fetchFn = fetch) {
     return messages;
   }
   const errorResponse = (error) => error instanceof TradeDeskError && error.status === 403
-    ? linkRequired() : { content: error instanceof TradeDeskError ? error.message : 'The profit checker is temporarily unavailable. Please try again shortly.', components: [] };
+    ? setupRequired() : { content: error instanceof TradeDeskError ? error.message : 'The profit checker is temporarily unavailable. Please try again shortly.', components: [] };
   return { client, lookup, isOwner, errorResponse,
     async primeRate() { const result = await client.rate(config.profitOwnerId); lastRate = result.rate; return result; },
     async saveRate(actor, value) { const result = await client.rate(actor, value); lastRate = result.rate; return result; },
@@ -116,19 +141,15 @@ export function createProfitDiscordHandler(config, fetchFn = fetch, service = cr
     const userId = actorId(interaction);
     if (!/^\d{17,20}$/.test(userId)) return response(privateReply('Your Discord account could not be confirmed.'));
     const name = interaction.data?.name, id = interaction.data?.custom_id;
-    if (interaction.type === 2 && name === 'profitsetup' || interaction.type === 3 && id === 'tdprofit:link') return response(linkModal());
+    if (interaction.type === 2 && ['setup', 'profitsetup'].includes(name) || interaction.type === 3 && ['tdprofit:setup', 'tdprofit:link'].includes(id)) return response(setupModal());
     if (interaction.type === 2 && name === 'ratechange' || interaction.type === 3 && id === 'tdprofit:rate-open') {
       return response(service.isOwner(userId) ? service.rateModal() : privateReply('Only the checker owner can change the shared USD→VND rate.'));
     }
-    if (interaction.type === 5 && id === 'tdprofit:link-submit') return deferred(interaction, async () => {
-      const identifier = modalValue(interaction.data.components, 'identifier').trim();
-      if (!identifier || identifier.length > 254) return [{ content: 'Enter your Trade Desk email address or Account ID.', components: [setupButton] }];
-      const result = await service.client.startLink(userId, identifier);
-      const authorization = new URL(result.authorizationUrl);
-      if (authorization.origin !== new URL(config.tradeDeskUrl || 'https://tradedesk.click').origin || !/^#discord-link=[A-Za-z0-9_-]+$/.test(authorization.hash))
-        throw new TradeDeskError('The account confirmation link is unavailable. Try linking again.');
-      return [{ content: 'Open Trade Desk, sign into the account you entered, and confirm this Discord link. Then return here and search for a skin. The link expires shortly.',
-        components: [{ type: 1, components: [{ type: 2, style: 5, label: 'Confirm in Trade Desk', url: authorization.href }] }] }];
+    if (interaction.type === 5 && ['tdprofit:setup-submit', 'tdprofit:link-submit'].includes(id)) return deferred(interaction, async () => {
+      const accountId = modalValue(interaction.data.components, 'account_id').trim().toLowerCase();
+      if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(accountId)) return [{ content: 'Paste your team Trade Desk Account ID in UUID format.', components: [setupButton] }];
+      const result = await service.client.setup(userId, accountId);
+      return [{ content: result.linked === true ? 'Account ID saved. You can now send skin names or photos in this channel.' : 'That team Account ID could not be set up. Check it and try again.', components: result.linked === true ? [] : [setupButton] }];
     });
     if (interaction.type === 5 && id === 'tdprofit:rate-submit') {
       if (!service.isOwner(userId)) return response(privateReply('Only the checker owner can change the shared USD→VND rate.'));
@@ -172,38 +193,50 @@ export function createProfitDiscordHandler(config, fetchFn = fetch, service = cr
       const next = `${parseRequest(query).items.join('; ')} rate ${rate}`;
       return deferred(interaction, () => service.lookup(userId, next));
     }
-    return response(privateReply('Use /profit to search, /profitsetup to link your account, or /ratechange to set the shared rate.'));
+    return response(privateReply('Use /setup to save your Account ID, then send skin names or photos. The owner can use /ratechange to set the shared rate.'));
   };
 }
 
-export async function answerProfitChannelMessage(message, config) {
+export async function answerProfitChannelMessage(message, config, service = null, fetchFn = fetch) {
   if (!config.profitChannelId || !message || message.author?.bot || message.guildId !== config.guildId || message.channelId !== config.profitChannelId) return false;
   const content = String(message.content || '').trim();
-  if (!content || content.startsWith('/')) return false;
+  if ((!content && !message.attachments?.size) || content.startsWith('/')) return false;
   if (/^!ratechange\b/i.test(content)) {
     await message.reply({ content: message.author.id === config.profitOwnerId ? 'Change the shared weekly USD→VND rate:' : 'Only the checker owner can change the shared USD→VND rate.',
       components: message.author.id === config.profitOwnerId ? [{ type: 1, components: [{ type: 2, style: 2, label: 'Change USD rate', custom_id: 'tdprofit:rate-open' }] }] : [], allowedMentions: noMentions });
     return true;
   }
-  if (/^(?:!profitsetup|!link)\b/i.test(content)) {
-    await message.reply({ content: 'Link your own Trade Desk account privately:', components: [setupButton], allowedMentions: noMentions });
+  if (/^(?:!setup|!profitsetup|!link)\b/i.test(content)) {
+    await message.reply({ content: 'Set up your team Trade Desk Account ID privately:', components: [setupButton], allowedMentions: noMentions });
     return true;
   }
   // Account identifiers belong in the private setup modal, never echoed into a result.
   if (/^[^\s@]+@[^\s@]+\.[^\s@]+$|^[a-f0-9]{8}-[a-f0-9-]{27,}$/i.test(content)) {
-    await message.reply({ content: 'Use Link Trade Desk to enter your email or Account ID privately.', components: [setupButton], allowedMentions: noMentions });
+    await message.reply({ content: 'Use Set up Account ID to enter your team Trade Desk Account ID privately.', components: [setupButton], allowedMentions: noMentions });
     return true;
   }
   const query = profitQuery(content.replace(/^!profit\b/i, '').replace(new RegExp(`<@!?${config.applicationId}>`, 'g'), '').trim());
-  if (!query) return false;
+  if (!query && !message.attachments?.size) return false;
   if (query.length > 1100) {
     await message.reply({ content: 'Send a skin request of at most 1100 characters.', allowedMentions: noMentions });
     return true;
   }
-  await message.reply({ content: '**Trade Desk profit check**\nClick below for a private result using your own Trade Desk account.' + queryFooter(query),
-    components: [{ type: 1, components: [{ type: 2, style: 1, label: 'Check my profit', custom_id: 'tdprofit:check' },
-      { type: 2, style: 2, label: 'Link Trade Desk', custom_id: 'tdprofit:link' }] }], allowedMentions: noMentions,
-    flags: 4, ...(message.id ? { nonce: `${message.id}:profit`, enforceNonce: true } : {}) });
+  service ||= createProfitService(config, fetchFn);
+  let messages;
+  try {
+    await message.channel?.sendTyping?.();
+    messages = await service.lookup(message.author.id, query, '', {
+      rawText: message.content || '', loadImage: message.attachments?.size ? () => firstDiscordImage(message, fetchFn) : null,
+    });
+  } catch (error) { messages = [service.errorResponse(error)]; }
+  for (const [index, result] of messages.entries()) {
+    const components = result.components?.map((row) => ({ ...row,
+      components: row.components.filter((component) => component.custom_id !== 'tdprofit:share') })).filter((row) => row.components.length) || [];
+    const payload = { content: result.content, components, allowedMentions: noMentions, flags: 4,
+      ...(message.id ? { nonce: `${message.id}:p${index}`, enforceNonce: true } : {}) };
+    if (index === 0) await message.reply(payload);
+    else await message.channel.send(payload);
+  }
   return true;
 }
 
@@ -211,7 +244,8 @@ export async function registerProfitCommands(config, fetchFn = fetch) {
   if (!config.profitChannelId || !config.applicationId || !config.guildId || !config.botToken) return;
   for (const command of [
     { name: 'profit', description: 'Check your Trade Desk offer and estimated VND profit', options: [{ name: 'items', description: 'Skin names (up to 10), optionally rate 3.65', type: 3, required: true }] },
-    { name: 'profitsetup', description: 'Link your own Trade Desk account privately' },
+    { name: 'setup', description: 'Set up your team Trade Desk Account ID privately' },
+    { name: 'profitsetup', description: 'Set up your team Trade Desk Account ID privately' },
     { name: 'ratechange', description: 'Owner: set the shared weekly USD to VND conversion rate' },
   ]) {
     const result = await fetchFn(`${api}/applications/${config.applicationId}/guilds/${config.guildId}/commands`, {

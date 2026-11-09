@@ -84,6 +84,7 @@ test('a warm lookup rechecks personal offer and shared conversion for each membe
   let currentUsd = 14500, currentFx = 26000, quoteCalls = 0;
   const service = createProfitService(config, async (url, options) => {
     const body = JSON.parse(options.body);
+    if (url.endsWith('/status')) return { ok: true, json: async () => ({ linked: true }) };
     if (url.endsWith('/catalogue')) return { ok: true, json: async () => ({ items: catalogue.items, version: 'v1' }) };
     if (url.endsWith('/quotes')) { quoteCalls++; return { ok: true, json: async () => ({ items: [{ ...row, usdCents: body.discordUserId === config.profitOwnerId ? currentUsd : 14000 }], rate: { vndPerUsd: currentFx, updatedAt: new Date().toISOString() } }) }; }
     throw new Error('unexpected API call');
@@ -108,12 +109,12 @@ test('button context is accepted only from the app and preserves the request thr
 
 test('unlinked members cannot receive catalogue suggestions or prices', async () => {
   const service = createProfitService(config, async (url) => {
-    assert.ok(url.endsWith('/catalogue'));
-    return { ok: false, status: 403 };
+    assert.ok(url.endsWith('/status'));
+    return { ok: true, json: async () => ({ linked: false }) };
   });
-  await assert.rejects(service.lookup('123456789012345680', 'ak redline ft'), (error) => {
-    assert.equal(service.errorResponse(error).components[0].components[0].custom_id, 'tdprofit:link'); return true;
-  });
+  const result = await service.lookup('123456789012345680', 'ak redline ft');
+  assert.equal(result[0].components[0].components[0].custom_id, 'tdprofit:setup');
+  assert.doesNotMatch(result[0].content, /\$/);
 });
 
 test('long requests keep every Discord page below its message limit and are never silently truncated', async () => {
