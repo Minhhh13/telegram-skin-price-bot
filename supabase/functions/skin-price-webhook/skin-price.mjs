@@ -9,6 +9,9 @@ const MAX_AGE_MS = 5 * 60 * 1000;
 const PHASE_LOOKUP_CONCURRENCY = 3;
 const exactCatalogNames = new Set(itemNames);
 const foldedCatalogNames = new Map();
+// A frozen custom list is a catalogue snapshot. Weak keys let replaced snapshots
+// be collected; mutable caller lists retain their original fresh-read behavior.
+const customExactCatalogs = new WeakMap();
 for (const name of itemNames) {
   const key = name.toLowerCase();
   const previous = foldedCatalogNames.get(key);
@@ -25,6 +28,25 @@ function exactCatalogCandidates(query, names = null) {
     .replace(/\s+(?:(?:buff(?:163)?\s+)?price(?:\s+check)?|on\s+buff(?:163)?)$/i, '');
   const options = raw === wrapped ? [raw] : [raw, wrapped];
   if (names) {
+    if (Object.isFrozen(names)) {
+      let index=customExactCatalogs.get(names);
+      if(!index){
+        const actual=names.map(item=>typeof item==='string'?item:item?.name).filter(name=>typeof name==='string');
+        index={exact:new Set(actual),folded:new Map()};
+        for(const name of actual){
+          const key=name.toLowerCase();
+          if(!index.folded.has(key))index.folded.set(key,[]);
+          index.folded.get(key).push(name);
+        }
+        customExactCatalogs.set(names,index);
+      }
+      for(const option of options){
+        if(index.exact.has(option))return [option];
+        const folded=index.folded.get(option.toLowerCase());
+        if(folded)return folded;
+      }
+      return [];
+    }
     const allowed = names.map((item) => typeof item === 'string' ? item : item?.name)
       .filter((name) => typeof name === 'string');
     for (const option of options) {
@@ -165,6 +187,14 @@ function entryFor(name) {
     wear: tokens.find((token) => wears.has(token)) || '', souvenir: tokens.includes('souvenir'), stattrak: tokens.includes('stattrak') };
 }
 const catalog = itemNames.map(entryFor);
+const customCatalogEntries = new WeakMap();
+function catalogEntries(names) {
+  if(!names)return catalog;
+  if(!Object.isFrozen(names))return names.map(name=>entryFor(typeof name==='string'?name:name.name));
+  let entries=customCatalogEntries.get(names);
+  if(!entries){entries=names.map(name=>entryFor(typeof name==='string'?name:name.name));customCatalogEntries.set(names,entries);}
+  return entries;
+}
 const catalogAgents = catalog.filter((entry) => entry.kind === 'agent');
 const catalogFinishKeys = new Set(catalog.filter((entry) => entry.weapon && entry.finish)
   .flatMap((entry) => [`${entry.weapon}|${entry.finish}`, `${entry.weapon}|${entry.finishNoArticle}`]));
@@ -318,7 +348,7 @@ function tokenMatchScore(typed, candidates) {
 // Keep every explicit variant constraint while ranking the finish text. This
 // runs only for unresolved requests, so normal lookups stay on the fast path.
 export function catalogSuggestionsForText(text, limit = 5, names = null) {
-  const entries = names ? names.map((name) => entryFor(typeof name === 'string' ? name : name.name)) : catalog;
+  const entries = catalogEntries(names);
   const agentMatches = rankAgentCandidates(text, entries);
   if (agentMatches.length) return agentMatches.slice(0, Math.max(0, Math.min(5, limit)))
     .map(({ entry }) => entry.name);
@@ -599,7 +629,7 @@ export async function resolveItem(query, _fetchFn = fetch, names = null) {
   if (exact.length === 1) return { name: exact[0] };
   if (exact.length > 1) return { ambiguous: exact.slice(0, 5), more: exact.length > 5 };
   if (isBareCollectibleClass(query)) return { missing: true };
-  const entries = names ? names.map((name) => entryFor(typeof name === 'string' ? name : name.name)) : catalog;
+  const entries = catalogEntries(names);
   const local = resolveFromCatalog(query, entries);
   if (local.missing) {
     const collectible = resolveCollectible(query, names || itemNames);
@@ -819,7 +849,7 @@ export function shouldReply(message, botUsername = '') {
   ));
 }
 
-export { DEFAULT_RATES };
+export { DEFAULT_RATES, extractPattern as extractItemVariant };
 
 
 
