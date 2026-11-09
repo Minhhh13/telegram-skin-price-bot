@@ -49,6 +49,98 @@ test('an absent conversion or unavailable or stale price never shows a green pro
   ]) assert.doesNotMatch(formatProfitItem(item, rate, [3.65], now), /🟢/);
 });
 
+test('missing Trade Desk prices stay neutral without a misleading conversion error', () => {
+  for (const usdCents of [null, undefined, NaN, 0]) {
+    const text = formatProfitItem({ ...row, usdCents, available: false }, { vndPerUsd: 25800 }, undefined, now);
+    assert.match(text, /Trade Desk: unavailable/);
+    assert.match(text, /⚪ Profit unavailable until both prices are available/);
+    assert.doesNotMatch(text, /Currency conversion|🟢|🔴/);
+  }
+});
+
+test('a known saved Trade Desk price remains visible but cannot produce stale profit', () => {
+  const saved = { ...row, usdCents: 71892, available: false, updatedAt: new Date(now - 3 * 3600000).toISOString() };
+  const text = formatProfitItem(saved, { vndPerUsd: 25800 }, undefined, now);
+  assert.match(text, /Trade Desk: \*\*\$718\.92\*\* → \*\*₫18,548,136\*\*/);
+  assert.match(text, /· outdated/);
+  assert.match(text, /⚪ Profit unavailable until both current prices are available/);
+  assert.doesNotMatch(text, /Currency conversion|🟢|🔴|Sources:|UTC/);
+});
+
+test('canonical names preserve commas, articles and terminal punctuation before request parsing', async () => {
+  const names = Object.freeze([
+    'StatTrak™ Music Kit | Daniel Sadowski, Eye of the Dragon',
+    'Music Kit | bbno$, u mad!',
+    'The Example Agent | Example Unit',
+    'Music Kit | Tigrenok, Clubbing in Georgia',
+    'Music Kit | Tigrenok, Clubbing In Georgia',
+  ]);
+  const source = { names, items: Object.freeze(names.map((name) => ({ game: '730', name, phase: null }))) };
+  for (const item of source.items) {
+    const match = await resolveProfitRequest(item.name, source);
+    assert.deepEqual(match.items, [item]);
+    assert.equal(match.unresolved.length, 0);
+  }
+  const rated = await resolveProfitRequest(`${names[0]} rate 3.78`, source);
+  assert.equal(rated.items[0].name, names[0]); assert.deepEqual(rated.rates, [3.78]);
+  const folded = await resolveProfitRequest('MUSIC KIT | TIGRENOK, CLUBBING IN GEORGIA', source);
+  assert.equal(folded.items.length, 0);
+  assert.deepEqual(new Set(folded.unresolved[0].candidates.map((item) => item.name)), new Set(names.slice(3)));
+});
+
+test('semicolon and newline compositions preserve whole canonical titles and one shared rate suffix', async () => {
+  const first = { game: '730', name: 'StatTrak™ Music Kit | Daniel Sadowski, Eye of the Dragon', phase: null };
+  const second = { game: '730', name: 'StatTrak™ Music Kit | Austin Wintory, Desert Fire', phase: null };
+  const source = { items: Object.freeze([first, second, identity]), names: Object.freeze([first.name, second.name, identity.name]) };
+  for (const separator of ['; ', '\n']) {
+    const result = await resolveProfitRequest(`${first.name}${separator}${second.name} rate 3.78`, source);
+    assert.deepEqual(result.items, [first, second]);
+    assert.deepEqual(result.rates, [3.78]);
+    assert.equal(result.unresolved.length, 0);
+  }
+  const mixed = await resolveProfitRequest(`${first.name}; ak redline ft rates 3.615, 3.78`, source);
+  assert.deepEqual(mixed.items, [first, identity]);
+  assert.deepEqual(mixed.rates, [3.615, 3.78]);
+  assert.equal(mixed.unresolved.length, 0);
+  const separateRate = await resolveProfitRequest(`${Array(10).fill(first.name).join('; ')}; rate 3.78`, source);
+  assert.deepEqual(separateRate.items, [first]);
+  assert.deepEqual(separateRate.rates, [3.78]);
+  await assert.rejects(resolveProfitRequest(Array(11).fill(first.name).join('; '), source), /at most 10/);
+});
+
+test('multi-item Gemini output with comma-bearing names fetches only the two exact price rows', async () => {
+  const items = ['StatTrak™ Music Kit | Daniel Sadowski, Eye of the Dragon', 'StatTrak™ Music Kit | Austin Wintory, Desert Fire']
+    .map((name) => ({ game: '730', name, phase: null }));
+  let quoteCalls = 0;
+  const service = createProfitService({ ...config, geminiKey: 'test-photo-key' }, async (url, options) => {
+    if (url.endsWith('/status')) return { ok: true, json: async () => ({ linked: true }) };
+    if (url.endsWith('/catalogue')) return { ok: true, json: async () => ({ items, version: 'music' }) };
+    if (url.includes('generativelanguage.googleapis.com')) return { ok: true, json: async () => ({ candidates: [{ content: { parts: [
+      { text: JSON.stringify({ items: items.map((item) => item.name) }) },
+    ] } }] }) };
+    assert.ok(url.endsWith('/quotes')); quoteCalls++;
+    assert.deepEqual(JSON.parse(options.body).items, items);
+    return { ok: true, json: async () => ({ items: items.map((item) => ({ ...row, ...item })), rate: { vndPerUsd: 25800 } }) };
+  });
+  const result = await service.lookup(config.profitOwnerId, 'rate 3.78', '', { image: { mimeType: 'image/png', base64: 'test-photo' } });
+  assert.equal(quoteCalls, 1);
+  const text = result.map((message) => message.content).join('\n');
+  assert.ok(items.every((item) => text.includes(item.name.replaceAll('|', '\\|'))));
+  assert.match(text, /\*\*3\.78\*\*/);
+  assert.doesNotMatch(text, /Choose the intended item/);
+});
+
+test('exact phase labels and source expiry metadata preserve identity and block outdated profit', async () => {
+  const frozen = { ...catalogue, names: Object.freeze([...catalogue.names]), items: Object.freeze([...catalogue.items]) };
+  const item = frozen.items[2];
+  for (const query of [`${item.name} · ${item.phase}`, `${item.name} ${item.phase}`]) {
+    assert.deepEqual((await resolveProfitRequest(query, frozen)).items, [item]);
+  }
+  const expired = formatProfitItem({ ...row, stale: true, expiresAt: new Date(now - 1000).toISOString() }, { vndPerUsd: 25800 }, undefined, now);
+  assert.match(expired, /· outdated/);
+  assert.doesNotMatch(expired, /🟢|🔴/);
+});
+
 test('profit output is compact while explicit 3.78 requests and freshness checks remain supported', async () => {
   const text = formatProfitItem(row, { vndPerUsd: 25800 }, undefined, now);
   assert.doesNotMatch(text, /Sources:|UTC|3\.78/);
@@ -139,5 +231,10 @@ test('long requests keep every Discord page below its message limit and are neve
   assert.ok(pages.length);
   assert.ok(pages.every((page) => page.content.length <= 1900));
   assert.ok(pages.every((page) => page.content.endsWith(queryFooter(query))));
+  const userId = '12345678901234567890', mention = `<@${userId}>\n`;
+  const automatic = await service.lookup(config.profitOwnerId, query, '', { messageLimit: 1900 - mention.length });
+  assert.ok(automatic.every((page) => page.content.length <= 1900 - mention.length));
+  assert.ok((mention + automatic[0].content).length <= 1900);
+  assert.equal(queryFromMessage({ author: { id: 'app', bot: true }, content: mention + automatic[0].content }, 'app'), query);
   await assert.rejects(service.lookup(config.profitOwnerId, 'x'.repeat(1101)), /at most 1100/);
 });

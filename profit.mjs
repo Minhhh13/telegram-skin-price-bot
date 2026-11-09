@@ -10,6 +10,65 @@ export class TradeDeskError extends Error {
 export const identityKey = (item) => `${item.game || '730'}\u0000${item.name}\u0000${item.phase || ''}`;
 export const identityId = (item) => createHash('sha256').update(identityKey(item)).digest('hex').slice(0, 24);
 export const itemLabel = (item) => `${item.name}${item.phase ? ` · ${item.phase}` : ''}`;
+const exactProfitCatalogues = new WeakMap();
+const PROFIT_RATE_SUFFIX = /\b(rates?|at|@)\s*[:=]?\s*((?:\d+(?:\.\d+)?\s*(?:,|\/|&|\band\b)?\s*)+)$/i;
+function parseProfitRateSuffix(text) {
+  let rates;
+  try { rates = profitBuyingRates(parseRequest(`placeholder ${text}`).rates); }
+  catch (error) { throw new TradeDeskError(error.message, 400); }
+  if (rates.some((rate) => !decimalUnits(rate, 3))) throw new TradeDeskError('Use at most three decimal places for a CNY buying rate.', 400);
+  return rates;
+}
+function exactProfitCatalogue(catalogue) {
+  const saved = exactProfitCatalogues.get(catalogue);
+  if (saved) return saved;
+  const literal = new Map(), foldedLiteral = new Map(), labels = new Map(), foldedLabels = new Map();
+  const add = (map, key, item) => { if (!map.has(key)) map.set(key, []); map.get(key).push(item); };
+  for (const item of catalogue.items) {
+    add(literal, item.name, item); add(foldedLiteral, item.name.toLowerCase(), item);
+    if (item.phase) for (const label of [itemLabel(item), `${item.name} ${item.phase}`]) {
+      add(labels, label, item); add(foldedLabels, label.toLowerCase(), item);
+    }
+  }
+  const prepared = { literal, foldedLiteral, labels, foldedLabels };
+  if (Object.isFrozen(catalogue.names) || Object.isFrozen(catalogue.items)) exactProfitCatalogues.set(catalogue, prepared);
+  return prepared;
+}
+
+function exactProfitRequest(text, catalogue) {
+  const raw = String(text).replace(/^!profit\b/i, '').trim(), index = exactProfitCatalogue(catalogue);
+  const find = (value) => {
+    const literal = index.literal.get(value);
+    if (literal) return { rows: literal, explicitPhase: false };
+    const labeled = index.labels.get(value);
+    if (labeled) return { rows: labeled, explicitPhase: true };
+    const folded = index.foldedLiteral.get(value.toLowerCase());
+    if (folded) return { rows: folded, explicitPhase: false };
+    const foldedLabel = index.foldedLabels.get(value.toLowerCase());
+    return foldedLabel ? { rows: foldedLabel, explicitPhase: true } : null;
+  };
+  let match = find(raw), rates = PROFIT_DEFAULT_RATES;
+  if (!match) {
+    const suffix = raw.match(PROFIT_RATE_SUFFIX);
+    if (suffix) {
+      match = find(raw.slice(0, suffix.index).trim());
+      if (match) {
+        rates = parseProfitRateSuffix(suffix[0]);
+      }
+    }
+  }
+  if (!match) return null;
+  const rows = [...new Map(match.rows.map((item) => [identityKey(item), item])).values()];
+  const distinctNames = new Set(rows.map((item) => item.name));
+  const plain = rows.filter((item) => !item.phase);
+  if (distinctNames.size > 1 || !match.explicitPhase && !plain.length) return {
+    items: [], rates, assumedFactoryNew: new Set(), unresolved: [{ query: raw,
+      message: distinctNames.size > 1 ? 'Choose the intended item.' : 'Choose a Doppler style.', candidates: rows.slice(0, 5) }],
+  };
+  const items = match.explicitPhase ? rows : plain;
+  if (items.length > 10) throw new TradeDeskError('Send a more specific wear or at most 10 items per check.', 400);
+  return { items, rates, unresolved: [], assumedFactoryNew: new Set() };
+}
 const cleanIdentity = (item) => item && item.game === '730' && typeof item.name === 'string' && item.name.length > 0 && item.name.length <= 512 &&
   (item.phase == null || phases.has(item.phase)) ? { game: '730', name: item.name, phase: item.phase || null } : null;
 
@@ -48,7 +107,7 @@ export function createTradeDeskClient({ url, apiKey, guildId }, fetchFn = fetch,
           if (valid) unique.set(identityKey(valid), valid);
         }
         if (!unique.size) throw new TradeDeskError('Trade Desk catalogue is temporarily unavailable.');
-        const items = [...unique.values()];
+        const items = Object.freeze([...unique.values()].map(Object.freeze));
         cached = { version: typeof result.version === 'string' ? result.version : '', items, names: Object.freeze([...new Set(items.map((item) => item.name))]),
           byId: new Map(items.map((item) => [identityId(item), item])),
           until: now() + Math.min(60_000, Math.max(1000, Number(result.ttlMs) || 60_000)) };
@@ -60,6 +119,34 @@ export function createTradeDeskClient({ url, apiKey, guildId }, fetchFn = fetch,
 }
 
 export async function resolveProfitRequest(text, catalogue) {
+  const exact = exactProfitRequest(text, catalogue);
+  if (exact) return exact;
+  let raw = String(text).replace(/^!profit\b/i, '').trim();
+  let segments = raw.split(/\s*[;\r\n]+\s*/).filter(Boolean);
+  if (segments.length > 1) {
+    let rates = PROFIT_DEFAULT_RATES;
+    // A literal last title wins over rate-looking words in the title itself.
+    const lastExact = exactProfitRequest(segments.at(-1), catalogue);
+    if (!lastExact || lastExact.rates !== PROFIT_DEFAULT_RATES) {
+      const suffix = raw.match(PROFIT_RATE_SUFFIX);
+      if (suffix) {
+        rates = parseProfitRateSuffix(suffix[0]);
+        raw = raw.slice(0, suffix.index).trim();
+        segments = raw.split(/\s*[;\r\n]+\s*/).filter(Boolean);
+      }
+    }
+    if (segments.length > 10) throw new TradeDeskError('Send at most 10 skins per request.', 400);
+    const selected = new Map(), unresolved = [], assumedFactoryNew = new Set();
+    for (const segment of segments) {
+      const result = await resolveProfitRequest(segment, catalogue);
+      if (result.rates !== PROFIT_DEFAULT_RATES) throw new TradeDeskError('Put one shared rate or rates suffix at the end of the request.', 400);
+      for (const item of result.items) selected.set(identityKey(item), item);
+      unresolved.push(...result.unresolved);
+      for (const key of result.assumedFactoryNew || []) assumedFactoryNew.add(key);
+    }
+    if (selected.size > 10) throw new TradeDeskError('Send a more specific wear or at most 10 items per check.', 400);
+    return { items: [...selected.values()], rates, unresolved, assumedFactoryNew };
+  }
   if (requestsFloatFilter(text)) throw new TradeDeskError('Exact float-range prices are unavailable. Enter a wear such as FN, MW, FT, WW or BS.', 400);
   let parsed;
   try { parsed = parseRequest(String(text).replace(/^!profit\b/i, '').trim()); }
@@ -140,17 +227,21 @@ const money = (value) => `₫${Math.round(value).toLocaleString('en-US')}`;
 const centsText = (value) => `${(value / 100n).toLocaleString('en-US')}.${String(value % 100n).padStart(2, '0')}`;
 const safe = (text) => String(text).replace(/@/g, '@\u200b').replace(/([\\`*_~|])/g, '\\$1');
 export function formatProfitItem(item, rate, rates = PROFIT_DEFAULT_RATES, now = Date.now()) {
-  const usd = Number(item.usdCents), cny = Number(item.buff?.cny), fx = Number(rate?.vndPerUsd);
+  const usd = typeof item.usdCents === 'number' ? item.usdCents : NaN, cny = Number(item.buff?.cny), fx = Number(rate?.vndPerUsd);
   const sourceCurrent = (value) => Number.isFinite(Date.parse(value || '')) && now - Date.parse(value) <= 2 * 60 * 60_000 && Date.parse(value) <= now + 5 * 60_000;
-  const tdAvailable = item.available === true && usd > 0 && Number.isSafeInteger(usd);
+  const tdKnown = usd > 0 && Number.isSafeInteger(usd);
+  const tdExpiry = Date.parse(item.expiresAt || '');
+  const tdStale = item.stale === true || !sourceCurrent(item.updatedAt) || Number.isFinite(tdExpiry) && tdExpiry <= now;
+  const tdAvailable = item.available === true && tdKnown && !tdStale;
   const buffAvailable = item.buff?.available === true && decimalUnits(cny, 2) !== null;
   const proceeds = convertUsdToVnd(usd, fx);
   const current = tdAvailable && buffAvailable && sourceCurrent(item.updatedAt) && sourceCurrent(item.buff.updatedAt);
   const lines = [`**${safe(itemLabel(item))}${item.assumedFactoryNew ? ' (FN assumed)' : ''}**`];
-  lines.push(`Trade Desk: ${tdAvailable ? `**$${centsText(BigInt(usd))}**${proceeds !== null ? ` → **${money(proceeds)}**` : ''}` : 'unavailable'}`);
+  lines.push(`Trade Desk: ${tdKnown ? `**$${centsText(BigInt(usd))}**${proceeds !== null ? ` → **${money(proceeds)}**` : ''}${tdStale ? ' · outdated' : item.available !== true ? ' · unavailable' : ''}` : 'unavailable'}`);
   const url = /^https:\/\/buff\.163\.com\/goods\/\d+$/.test(item.buff?.url || '') ? ` · [BUFF listing](<${item.buff.url}>)` : '';
   lines.push(`BUFF: ${buffAvailable ? `**¥${centsText(decimalUnits(cny, 2))} CNY**${url}` : 'unavailable'}`);
-  if (!(fx > 0)) lines.push('⚪ The owner needs to set the weekly USD→VND rate with /ratechange.');
+  if (!tdKnown || !buffAvailable) lines.push('⚪ Profit unavailable until both prices are available.');
+  else if (!(fx > 0)) lines.push('⚪ The owner needs to set the weekly USD→VND rate with /ratechange.');
   else if (proceeds === null) lines.push('⚪ Currency conversion is unavailable for this amount.');
   else if (!current) lines.push('⚪ Profit unavailable until both current prices are available.');
   else {

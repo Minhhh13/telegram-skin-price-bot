@@ -41,8 +41,9 @@ export function createProfitService(config, fetchFn = fetch) {
   let lastRate = null;
   const isOwner = (userId) => Boolean(config.profitOwnerId && userId === config.profitOwnerId);
   const setupRequired = () => ({ content: 'Set up your team Trade Desk Account ID once, then send skin names or photos here.', components: [setupButton] });
-  async function lookup(userId, query = '', selectedId = '', { image = null, loadImage = null, rawText = query } = {}) {
+  async function lookup(userId, query = '', selectedId = '', { image = null, loadImage = null, rawText = query, messageLimit = 1900 } = {}) {
     if (query.length > 1100) throw new TradeDeskError('Send a skin request of at most 1100 characters.', 400);
+    const replyLimit = Math.min(1900, Math.max(1500, Number.isSafeInteger(messageLimit) ? messageLimit : 1900));
     const status = await client.status(userId);
     if (!status.linked) return [setupRequired()];
     lastRate = status.rate || lastRate;
@@ -91,13 +92,13 @@ export function createProfitService(config, fetchFn = fetch) {
         : 'Weekly USD→VND: not set'}`;
       const blocks = quotes.map((item) => formatProfitItem({ ...item,
         assumedFactoryNew: request.assumedFactoryNew?.has(identityId(item)) === true }, result.rate, request.rates));
-      for (const chunk of splitDiscord([header, ...blocks].join('\n\n'), 1900 - queryFooter(query).length)) {
+      for (const chunk of splitDiscord([header, ...blocks].join('\n\n'), replyLimit - queryFooter(query).length)) {
         messages.push({ content: chunk + queryFooter(query), components: resultControls(isOwner(userId)) });
       }
     }
     for (const entry of request.unresolved) {
       const content = `**${safe(entry.query)}**\n${entry.message}${entry.candidates.length ? '\n' + entry.candidates.map((item) => `• ${safe(itemLabel(item))}`).join('\n') : ''}`;
-      for (const chunk of splitDiscord(content, 1900 - queryFooter(query).length)) messages.push({
+      for (const chunk of splitDiscord(content, replyLimit - queryFooter(query).length)) messages.push({
         content: chunk + queryFooter(query), components: entry.candidates.length ? candidateControls(entry.candidates) : [],
       });
     }
@@ -224,17 +225,22 @@ export async function answerProfitChannelMessage(message, config, service = null
     return true;
   }
   service ||= createProfitService(config, fetchFn);
+  const userId = String(message.author?.id || '');
+  if (!/^\d{17,20}$/.test(userId)) return false;
+  const mention = `<@${userId}>\n`;
   let messages;
   try {
     await message.channel?.sendTyping?.();
-    messages = await service.lookup(message.author.id, query, '', {
+    messages = await service.lookup(userId, query, '', {
       rawText: message.content || '', loadImage: message.attachments?.size ? () => firstDiscordImage(message, fetchFn) : null,
+      messageLimit: 1900 - mention.length,
     });
   } catch (error) { messages = [service.errorResponse(error)]; }
   for (const [index, result] of messages.entries()) {
     const components = result.components?.map((row) => ({ ...row,
       components: row.components.filter((component) => component.custom_id !== 'tdprofit:share') })).filter((row) => row.components.length) || [];
-    const payload = { content: result.content, components, allowedMentions: noMentions, flags: 4,
+    const payload = { content: (index === 0 ? mention : '') + result.content, components,
+      allowedMentions: { parse: [], users: index === 0 ? [userId] : [], roles: [], repliedUser: false }, flags: 4,
       ...(message.id ? { nonce: `${message.id}:p${index}`, enforceNonce: true } : {}) };
     if (index === 0) await message.reply(payload);
     else await message.channel.send(payload);

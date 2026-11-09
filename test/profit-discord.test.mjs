@@ -216,7 +216,8 @@ test('plain profit-channel messages automatically check the author without an ex
   const seen = [], service = { async lookup(actor, query, selected, extra) { seen.push({ actor, query, selected, rawText: extra.rawText }); return [{ content: 'Personal priced result', components: [] }]; } };
   assert.equal(await answerProfitChannelMessage({ ...message, channelId: 'buff-channel' }, config, service), false);
   assert.equal(await answerProfitChannelMessage(message, config, service), true);
-  assert.equal(sent[0].content, 'Personal priced result');
+  assert.equal(sent[0].content, `<@${userId}>\nPersonal priced result`);
+  assert.deepEqual(sent[0].allowedMentions, { parse: [], users: [userId], roles: [], repliedUser: false });
   assert.deepEqual(seen, [{ actor: userId, query: 'ak redline ft', selected: '', rawText: 'ak redline ft' }]);
   await answerProfitChannelMessage({ ...message, content: 'member@example.test' }, config, service);
   assert.doesNotMatch(sent[1].content, /member@example/);
@@ -234,6 +235,29 @@ test('automatic profit reply nonces fit real Discord snowflakes and remain uniqu
   assert.equal(sent.length, 6);
   assert.ok(sent.every((payload) => payload.nonce.length <= 25 && payload.enforceNonce === true));
   assert.equal(new Set(sent.map((payload) => payload.nonce)).size, 6);
+  for (let start = 0; start < sent.length; start += 3) {
+    assert.match(sent[start].content, new RegExp(`^<@${userId}>\\n`));
+    assert.deepEqual(sent[start].allowedMentions, { parse: [], users: [userId], roles: [], repliedUser: false });
+    for (const later of sent.slice(start + 1, start + 3)) {
+      assert.doesNotMatch(later.content, /^<@/);
+      assert.deepEqual(later.allowedMentions, { parse: [], users: [], roles: [], repliedUser: false });
+    }
+  }
+});
+
+test('automatic mentions target only the requester and leave stateless request context unchanged', async () => {
+  const sent = [], body = `Quote for @everyone <@${config.profitOwnerId}> <@&123456789012345699>` + queryFooter('ak redline ft');
+  const service = { async lookup(actor, query, selected, options) {
+    assert.equal(actor, userId); assert.equal(query, 'ak redline ft');
+    assert.equal(options.messageLimit, 1900 - `<@${userId}>\n`.length);
+    return [{ content: body, components: [] }];
+  } };
+  const message = { id: '1234567890123456789', author: { id: userId, bot: false }, guildId: config.guildId,
+    channelId: config.profitChannelId, content: 'ak redline ft', reply: async (value) => sent.push(value) };
+  await answerProfitChannelMessage(message, config, service);
+  assert.equal(sent[0].content, `<@${userId}>\n${body}`);
+  assert.deepEqual(sent[0].allowedMentions, { parse: [], users: [userId], roles: [], repliedUser: false });
+  assert.ok(sent[0].content.endsWith(queryFooter('ak redline ft')));
 });
 
 test('unsupported attachment-only posts spend no Gemini or catalogue call and typed text still works', async () => {
