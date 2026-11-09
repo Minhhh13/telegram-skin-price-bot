@@ -2,8 +2,6 @@ import { createServer } from 'node:http';
 import { createHandler } from './supabase/functions/skin-price-webhook/handler.mjs';
 import { createDiscordHandler, registerDiscordCommand } from './discord.mjs';
 import { startDiscordGateway } from './discord-gateway.mjs';
-import { startMessengerSupervisor } from './messenger-supervisor.mjs';
-import { startGoMessengerListener } from './messenger-go.mjs';
 import { createProfitDiscordHandler, createProfitService, registerProfitCommands } from './profit-discord.mjs';
 import { isProfitChannel, profitChannelIds } from './profit-channels.mjs';
 
@@ -69,10 +67,12 @@ async function connectIntegrations() {
   catch (error) { console.error('Discord channel listener setup failed:', error instanceof Error ? error.message : String(error)); }
   if (process.env.MESSENGER_ENABLED === 'false') {
     console.log('Messenger listener paused');
+  } else if (process.env.MESSENGER_BACKEND === 'go') {
+    const { startGoMessengerListener } = await import('./messenger-go.mjs');
+    messengerListener = startGoMessengerListener(messengerConfig);
   } else {
-    messengerListener = process.env.MESSENGER_BACKEND === 'go'
-      ? startGoMessengerListener(messengerConfig)
-      : startMessengerSupervisor(messengerConfig);
+    const { startMessengerSupervisor } = await import('./messenger-supervisor.mjs');
+    messengerListener = startMessengerSupervisor(messengerConfig);
   }
 }
 
