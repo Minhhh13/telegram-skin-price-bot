@@ -5,7 +5,7 @@ The checker uses the existing bot connection in an explicit list of profit chann
 ## Member flow
 
 - `/setup`, `/profitsetup` or **Set up Account ID** opens a private form for the member's team Trade Desk Account ID in UUID format. The backend accepts only its approved team-account roster. There is no email entry, Discord role gate, member approval or website confirmation step.
-- After setup, posting a skin name or supported photo in the profit channel automatically returns the posting member's personal prices and profit. No command or extra button is needed. Photos use the existing Gemini image-reading path; clear text matches stay local.
+- After setup, posting a skin name or supported photo in the profit channel automatically returns the posting member's personal prices and profit. The first automatic reply mentions only that member; later chunks do not ping again. No command or extra button is needed. Photos use the existing Gemini image-reading path; clear text matches stay local.
 - `/profit items: ak redline ft` remains an optional private lookup. Each lookup and button click uses that Discord member's configured Account ID.
 - **Refresh** rechecks the member's current Trade Desk account rate and the shared conversion. **Custom buying rate** accepts `3.65` or `3650` VND per CNY. **Share result** publishes the displayed snapshot only after the member clicks it.
 - An ambiguous request offers up to five actual Trade Desk identities. Phase, wear, StatTrak and Souvenir remain part of the exact price identity.
@@ -26,7 +26,7 @@ Trade Desk remains the source for current personal USD estimates and the shared 
 
 `return on cost % = profit ÷ purchase cost × 100`
 
-Amounts round to the nearest VND after Trade Desk's existing per-item USD-cent rounding. Results show the shared currency rate and buying-rate rows at 3.60, 3.65, 3.70, 3.75 and 3.80. An explicitly requested or custom 3.78 remains supported. Source timestamps and the estimate footer are omitted from the display. Green/red still requires positive current values from both sources internally; missing, rejected or stale values remain neutral.
+Amounts round to the nearest VND after Trade Desk's existing per-item USD-cent rounding. Results show the shared currency rate and buying-rate rows at 3.60, 3.65, 3.70, 3.75 and 3.80. An explicitly requested or custom 3.78 remains supported. Source timestamps and the estimate footer are omitted from the display. A known saved Trade Desk USD price can remain visible and be converted to VND while it is stale; green/red profit still requires positive current values from both sources internally. Missing, rejected or stale values remain neutral, and a missing price is reported as unavailable rather than as a currency-conversion failure.
 
 ## Configuration
 
