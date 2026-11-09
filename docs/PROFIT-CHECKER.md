@@ -4,9 +4,9 @@ The checker uses the existing bot connection in a separate Discord channel. The 
 
 ## Member flow
 
-- `/profitsetup` or **Link Trade Desk** opens a private form for the member's Trade Desk email or Account ID.
-- The member follows the short-lived confirmation link and confirms while signed into the matching Trade Desk account. The identifier alone does not grant access to another account.
-- `/profit items: ak redline ft` returns a private personal estimate. Posting a skin name in the profit channel creates **Check my profit**; each click uses that clicker's linked account.
+- `/setup`, `/profitsetup` or **Set up Account ID** opens a private form for the member's team Trade Desk Account ID in UUID format. The backend accepts only its approved team-account roster. There is no email entry, Discord role gate, member approval or website confirmation step.
+- After setup, posting a skin name or supported photo in the profit channel automatically returns the posting member's personal prices and profit. No command or extra button is needed. Photos use the existing Gemini image-reading path; clear text matches stay local.
+- `/profit items: ak redline ft` remains an optional private lookup. Each lookup and button click uses that Discord member's configured Account ID.
 - **Refresh** rechecks the member's current Trade Desk account rate and the shared conversion. **Custom buying rate** accepts `3.65` or `3650` VND per CNY. **Share result** publishes the displayed snapshot only after the member clicks it.
 - An ambiguous request offers up to five actual Trade Desk identities. Phase, wear, StatTrak and Souvenir remain part of the exact price identity.
 
@@ -41,8 +41,8 @@ TRADE_DESK_DISCORD_API_KEY=<separate restricted integration credential>
 
 The existing Discord guild, application, public key and bot token are reused. Trade Desk configures the same integration credential with its approved guild and owner IDs. Keep the integration secret only in service environment settings.
 
-The bot calls the Trade Desk `/api/integrations/discord/` adapter over HTTPS with bearer authentication. It caches only catalogue identities for up to 60 seconds; version checks avoid retransferring an unchanged catalogue and preserve its prepared local matching index. Personalized offers are not cached. Clear warm lookups make one quote request; ambiguous requests check linked-account status before showing choices. No background catalogue polling, another bot connection or Gemini request is added.
+The bot calls the Trade Desk `/api/integrations/discord/` adapter over HTTPS with bearer authentication. UUID setup uses `setup` with `{guildId,discordUserId,accountId}` and expects `{linked:true}`. It caches only catalogue identities for up to 60 seconds; version checks avoid retransferring an unchanged catalogue and preserve its prepared local matching index. Personalized offers are not cached. Each lookup checks setup status before downloading a photo, calling Gemini, or fetching personal prices. Clear text then makes one quote request; photos and unresolved text can use Gemini for interpretation. No background catalogue polling or another bot connection is added.
 
 ## Verification
 
-`node --test test/profit.test.mjs test/profit-discord.test.mjs` checks currency units, return on cost, missing/stale prices, exact variants, cache reuse, member separation, fresh account/conversion values, owner-only rate changes, signature/channel validation, private linking, bot-owned button context and additive command registration. The full `npm test` suite protects the existing BUFF, Telegram and Messenger behavior.
+`node --test test/profit.test.mjs test/profit-discord.test.mjs` checks currency units, return on cost, missing/stale prices, exact variants, cache reuse, member separation, fresh account/conversion values, owner-only rate changes, signature/channel validation, private UUID setup, automatic text/photo lookup, the pre-setup price/AI gate, bot-owned button context and additive command registration. The full `npm test` suite protects the existing BUFF, Telegram and Messenger behavior.
