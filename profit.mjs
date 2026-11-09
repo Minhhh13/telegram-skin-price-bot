@@ -211,14 +211,21 @@ export function convertUsdToVnd(usdCents, vndPerUsd) {
   const result = halfUp(BigInt(usdCents) * fxUnits, 10_000n);
   return result <= MAX_SAFE ? Number(result) : null;
 }
+export function convertCnyCentsToVnd(cnyCents, rate) {
+  const cents = typeof cnyCents === 'bigint' ? cnyCents : Number.isSafeInteger(cnyCents) ? BigInt(cnyCents) : null;
+  if (cents === null || cents <= 0n || cents > MAX_SAFE || rate < 1 || rate > 10) return null;
+  const rateUnits = decimalUnits(rate, 3);
+  if (!rateUnits) return null;
+  const result = halfUp(cents * rateUnits, 100n);
+  return result > 0n && result <= MAX_SAFE ? Number(result) : null;
+}
 export function calculateProfit({ usdCents, cny, vndPerUsd, buyingRate }) {
   if (buyingRate < 2 || buyingRate > 6) return null;
   const cnyUnits = decimalUnits(cny, 2), rateUnits = decimalUnits(buyingRate, 3);
   const proceeds = convertUsdToVnd(usdCents, vndPerUsd);
   if (!cnyUnits || !rateUnits || proceeds === null) return null;
-  const exactCost = halfUp(cnyUnits * rateUnits, 100n);
-  if (exactCost <= 0n || exactCost > MAX_SAFE) return null;
-  const cost = Number(exactCost);
+  const cost = convertCnyCentsToVnd(cnyUnits, buyingRate);
+  if (cost === null) return null;
   const profit = proceeds - cost;
   return { proceeds, cost, profit, roi: profit / cost * 100, breakEven: proceeds / cny / 1000 };
 }
