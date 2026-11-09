@@ -156,7 +156,8 @@ export function formatProfitItem(item, rate, rates = DEFAULT_RATES, now = Date.n
       const result = calculateProfit({ usdCents: usd, cny, vndPerUsd: fx, buyingRate });
       if (!result) continue;
       const sign = result.profit > 0 ? '+' : result.profit < 0 ? '−' : '';
-      lines.push(`${result.profit > 0 ? '🟢' : result.profit < 0 ? '🔴' : '⚪'} **${buyingRate.toFixed(2)}** · ${money(result.cost)} · **${sign}${money(Math.abs(result.profit))} (${result.roi >= 0 ? '+' : ''}${result.roi.toFixed(2)}%)**`);
+      const rateLabel=buyingRate.toFixed(3).replace(/0$/, '');
+      lines.push(`${result.profit > 0 ? '🟢' : result.profit < 0 ? '🔴' : '⚪'} **${rateLabel}** · ${money(result.cost)} · **${sign}${money(Math.abs(result.profit))} (${result.roi >= 0 ? '+' : ''}${result.roi.toFixed(2)}%)**`);
     }
     const cnyUnits = decimalUnits(cny, 2);
     if (cnyUnits) {

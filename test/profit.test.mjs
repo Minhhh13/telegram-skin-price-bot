@@ -41,6 +41,7 @@ test('an absent conversion or unavailable or stale price never shows a green pro
   const fresh = formatProfitItem(row, { vndPerUsd: 26000 }, [3.65], now);
   assert.match(fresh, /🟢 \*\*3\.65\*\*.*\+₫120,000 \(\+3\.29%\)/);
   assert.match(fresh, /\$145\.00.*₫3,770,000/);
+  assert.match(formatProfitItem(row,{vndPerUsd:26000},[3.615],now),/\*\*3\.615\*\* · ₫3,615,000/);
   for (const [item, rate] of [
     [row, { vndPerUsd: null }], [{ ...row, available: false }, { vndPerUsd: 26000 }],
     [{ ...row, buff: { ...row.buff, available: false } }, { vndPerUsd: 26000 }],
