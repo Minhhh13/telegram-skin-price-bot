@@ -5,6 +5,12 @@ const submitId = 'tdprofit:customer-quote-submit';
 const phoneId = 'tdprofit:customer-copy';
 const phoneSubmitId = 'tdprofit:customer-copy-submit';
 const listing = /^https:\/\/buff\.163\.com\/goods\/\d+$/;
+const messageScope = message => message?.id == null ? '' : /^\d{17,20}$/.test(message.id) ? `:${message.id}` : null;
+const isSubmit = (id, base) => typeof id === 'string' && (id === base || id.startsWith(`${base}:`));
+const matchesSource = (id, base, message) => {
+  const scope = messageScope(message);
+  return scope !== null && (id === base || (scope !== '' && id === `${base}${scope}`));
+};
 const ownMessage = (message, applicationId) => message?.author?.id === applicationId && message.author.bot === true;
 const error = () => ({ type: 4, data: { content: 'That customer quote is unavailable. Refresh the price and try again.', flags: 68, allowed_mentions: { parse: [] } } });
 const unescapeName = (text) => text.replace(/\\([\\`*_~|])/g, '$1').replace(/\u200b/g, '').replace(/ \(FN assumed\)$/, '');
@@ -54,10 +60,10 @@ const rateLabel = rate => {
 const quoteRates = quotes => [...new Set(quotes.flatMap(quote => quote.rates.length ? quote.rates : PROFIT_DEFAULT_RATES)
   .map(sellingRate).filter(rate => rate !== null).map(rateLabel))].slice(0, 25);
 
-function customerModal(quotes) {
+function customerModal(quotes, scope) {
   const rates = quoteRates(quotes);
   const rate = rates.length === 1 ? rates[0] : rates.includes('3.65') ? '3.65' : rates[0];
-  return { type: 9, data: { custom_id: submitId, title: 'Customer quote', components: [
+  return { type: 9, data: { custom_id: `${submitId}${scope}`, title: 'Customer quote', components: [
     { type: 18, label: 'Item', component: { type: 3, custom_id: 'item', required: true, placeholder: 'Choose one item',
       options: quotes.map((quote, index) => ({ label: quote.name.slice(0, 100), value: String(index), default: quotes.length === 1 })) } },
     { type: 18, label: 'CNY to VND rate', component: { type: 3, custom_id: 'selling_rate', required: true,
@@ -83,12 +89,13 @@ function copiedText(message, applicationId) {
 export function profitCustomerInteraction(interaction, applicationId) {
   const id = interaction.data?.custom_id;
   if (interaction.type === 3 && id === profitCustomerButtonId) {
-    if (!queryFromMessage(interaction.message, applicationId)) return error();
+    const scope = messageScope(interaction.message);
+    if (scope === null || !queryFromMessage(interaction.message, applicationId)) return error();
     const quotes = profitCustomerQuotes(interaction.message.content);
-    return quotes.length ? customerModal(quotes) : error();
+    return quotes.length ? customerModal(quotes, scope) : error();
   }
-  if (interaction.type === 5 && id === submitId) {
-    if (!queryFromMessage(interaction.message, applicationId)) return error();
+  if (interaction.type === 5 && isSubmit(id, submitId)) {
+    if (!matchesSource(id, submitId, interaction.message) || !queryFromMessage(interaction.message, applicationId)) return error();
     const quotes = profitCustomerQuotes(interaction.message.content), selected = value(interaction.data.components, 'item');
     const quote = /^\d{1,2}$/.test(String(selected ?? '')) ? quotes[Number(selected)] : null;
     const rate = sellingRate(value(interaction.data.components, 'selling_rate'));
@@ -99,12 +106,14 @@ export function profitCustomerInteraction(interaction, applicationId) {
     return amount === null ? error() : copyReady(`${quote.name}\nBUFF: ¥${cny} CNY\n${rateLabel(rate)} → ₫${amount.toLocaleString('en-US')}\n${quote.url}`);
   }
   if (interaction.type === 3 && id === phoneId) {
+    const scope = messageScope(interaction.message);
     const text = copiedText(interaction.message, applicationId);
-    return text ? { type: 9, data: { custom_id: phoneSubmitId, title: 'Copy quote on phone', components: [
-      { type: 18, label: 'Tap, Select All, then Copy', component: { type: 4, custom_id: 'quote_text', style: 2, required: false, max_length: 1800, value: text } },
+    return text && scope !== null ? { type: 9, data: { custom_id: `${phoneSubmitId}${scope}`, title: 'Copy quote on phone', components: [
+      { type: 18, label: 'Tap, Select All, then Copy', component: { type: 4, custom_id: `quote_text${scope}`, style: 2, required: false, max_length: 1800, value: text } },
     ] } } : error();
   }
-  if (interaction.type === 5 && id === phoneSubmitId) {
+  if (interaction.type === 5 && isSubmit(id, phoneSubmitId)) {
+    if (!matchesSource(id, phoneSubmitId, interaction.message)) return error();
     const text = copiedText(interaction.message, applicationId);
     return text ? copyReady(text) : error();
   }

@@ -19,7 +19,7 @@ const rows = [
 ];
 const content = '**Your Trade Desk profit check**\nWeekly USD→VND: **25,800**\nInternal account: secret-account-value\n\n' +
   rows.map((row) => formatProfitItem(row, { vndPerUsd: 25800 })).join('\n\n') + queryFooter('deagle kumicho dragon ft; m9 ruby');
-const original = { author: { id: app, bot: true }, content };
+const original = { id: '123456789012345684', author: { id: app, bot: true }, content };
 function signed(data) {
   const body = JSON.stringify({ application_id: app, guild_id: guild, channel_id: firstChannel, member: { user: { id: user } }, ...data });
   const timestamp = String(Math.floor(Date.now() / 1000));
@@ -56,7 +56,9 @@ test('customer quote button and submit work privately in both channels without a
     assert.equal(modal.data.components[1].component.type, 3);
     assert.deepEqual(modal.data.components[1].component.options.map(option => option.value), ['3.60', '3.65', '3.70', '3.75', '3.80']);
     assert.equal(modal.data.components[1].component.options.find(option => option.default).value, '3.65');
-    const request = signed({ ...submit(), channel_id });
+    assert.equal(modal.data.custom_id, `tdprofit:customer-quote-submit:${original.id}`);
+    const submission = submit();
+    const request = signed({ ...submission, channel_id, data: { ...submission.data, custom_id: modal.data.custom_id } });
     const response = JSON.parse((await handler(request.headers, request.body)).body);
     assert.equal(response.type, 4); assert.equal(response.data.flags, 68);
     assert.deepEqual(response.data.allowed_mentions, { parse: [] });
@@ -82,9 +84,11 @@ test('BUFF-style quote labels preserve cents and a displayed three-decimal custo
 
 test('mobile copy exposes only selectable customer text and ignores edited submit content', () => {
   const response = profitCustomerInteraction(submit(), app), minimal = quoteText(response);
-  const message = { author: { id: app, bot: true }, content: response.data.content };
+  const message = { id: '123456789012345685', author: { id: app, bot: true }, content: response.data.content };
   const phone = profitCustomerInteraction({ type: 3, message, data: { custom_id: 'tdprofit:customer-copy' } }, app);
   assert.equal(phone.type, 9);
+  assert.equal(phone.data.custom_id, `tdprofit:customer-copy-submit:${message.id}`);
+  assert.equal(phone.data.components[0].component.custom_id, `quote_text:${message.id}`);
   assert.equal(phone.data.components[0].component.style, 2);
   assert.equal(phone.data.components[0].component.value, minimal);
   const submitted = profitCustomerInteraction({ type: 5, message, data: { custom_id: 'tdprofit:customer-copy-submit', components: [
@@ -92,9 +96,50 @@ test('mobile copy exposes only selectable customer text and ignores edited submi
   ] } }, app);
   assert.equal(quoteText(submitted), minimal);
   const legacyText = `${rows[0].name}\n₫357,700\nhttps://buff.163.com/goods/34432`;
-  const legacy = { ...message, content: `Copy this quote:\n\`\`\`text\n${legacyText}\n\`\`\`` };
+  const legacy = { author: message.author, content: `Copy this quote:\n\`\`\`text\n${legacyText}\n\`\`\`` };
   const legacyPhone = profitCustomerInteraction({ type: 3, message: legacy, data: { custom_id: 'tdprofit:customer-copy' } }, app);
   assert.equal(legacyPhone.data.components[0].component.value, legacyText);
+  assert.equal(legacyPhone.data.custom_id, 'tdprofit:customer-copy-submit');
+  assert.equal(legacyPhone.data.components[0].component.custom_id, 'quote_text');
+});
+
+test('customer and phone modals keep distinct source contexts and reject crossed submissions without network calls', async () => {
+  const handler = createProfitDiscordHandler(config, async () => { assert.fail('Modal context must use only its source message'); });
+  const sources = [
+    { channel: firstChannel, message: original, selection: '1', rate: '3.65', copyId: '123456789012345686', expected: `${rows[1].name} · Ruby\nBUFF: ¥5,900.00 CNY\n3.65 → ₫21,535,000\nhttps://buff.163.com/goods/43091` },
+    { channel: secondChannel, message: { ...original, id: '123456789012345687', content: '**Your Trade Desk profit check**\n\n' +
+      formatProfitItem(rows[0], { vndPerUsd: 25800 }, [3.615]) + queryFooter('deagle kumicho dragon ft rate 3.615') },
+      selection: '0', rate: '3.615', copyId: '123456789012345688', expected: `${rows[0].name}\nBUFF: ¥98.00 CNY\n3.615 → ₫354,270\nhttps://buff.163.com/goods/34432` },
+  ];
+  const invoke = async (source, data) => {
+    const request = signed({ channel_id: source.channel, ...data });
+    return JSON.parse((await handler(request.headers, request.body)).body);
+  };
+  for (const source of sources) {
+    source.modal = await invoke(source, { type: 3, message: source.message, data: { custom_id: profitCustomerButtonId } });
+    const submission = submit(source.selection, source.rate);
+    const response = await invoke(source, { ...submission, message: source.message, data: { ...submission.data, custom_id: source.modal.data.custom_id } });
+    assert.equal(quoteText(response), source.expected);
+    source.copy = { id: source.copyId, author: original.author, content: response.data.content };
+    source.phone = await invoke(source, { type: 3, message: source.copy, data: { custom_id: 'tdprofit:customer-copy' } });
+    assert.equal(source.phone.data.components[0].component.value, source.expected);
+    const copied = await invoke(source, { type: 5, message: source.copy, data: { custom_id: source.phone.data.custom_id } });
+    assert.equal(quoteText(copied), source.expected);
+  }
+  assert.notEqual(sources[0].modal.data.custom_id, sources[1].modal.data.custom_id);
+  assert.notEqual(sources[0].phone.data.custom_id, sources[1].phone.data.custom_id);
+  assert.notEqual(sources[0].phone.data.components[0].component.custom_id, sources[1].phone.data.components[0].component.custom_id);
+  for (const [source, other] of [[sources[0], sources[1]], [sources[1], sources[0]]]) {
+    const submission = submit(source.selection, source.rate);
+    for (const custom_id of [other.modal.data.custom_id, 'tdprofit:customer-quote-submit:invalid']) {
+      const response = await invoke(source, { ...submission, message: source.message, data: { ...submission.data, custom_id } });
+      assert.equal(quoteText(response), undefined);
+      assert.match(response.data.content, /unavailable/);
+    }
+    const response = await invoke(source, { type: 5, message: source.copy, data: { custom_id: other.phone.data.custom_id } });
+    assert.equal(quoteText(response), undefined);
+    assert.match(response.data.content, /unavailable/);
+  }
 });
 
 test('forged messages, invalid item choices, malformed rates and unlisted channels cannot create a customer quote', async () => {
