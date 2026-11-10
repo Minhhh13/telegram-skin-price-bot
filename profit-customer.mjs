@@ -1,4 +1,4 @@
-import { convertCnyCentsToVnd, queryFromMessage } from './profit.mjs';
+import { convertCnyCentsToVnd, PROFIT_DEFAULT_RATES, queryFromMessage } from './profit.mjs';
 
 export const profitCustomerButtonId = 'tdprofit:customer-quote';
 const submitId = 'tdprofit:customer-quote-submit';
@@ -47,14 +47,21 @@ function sellingRate(raw) {
   return Number.isFinite(rate) && rate >= 1 && rate <= 10 ? rate : null;
 }
 
+const rateLabel = rate => {
+  const units = Math.round(rate * 1000);
+  return (units / 1000).toFixed(units % 10 === 0 ? 2 : 3);
+};
+const quoteRates = quotes => [...new Set(quotes.flatMap(quote => quote.rates.length ? quote.rates : PROFIT_DEFAULT_RATES)
+  .map(sellingRate).filter(rate => rate !== null).map(rateLabel))].slice(0, 25);
+
 function customerModal(quotes) {
-  const rates = [...new Set(quotes.flatMap((quote) => quote.rates))];
-  const rate = rates.length === 1 ? rates[0] : rates.includes('3.65') ? '3.65' : rates[0] || '3.65';
+  const rates = quoteRates(quotes);
+  const rate = rates.length === 1 ? rates[0] : rates.includes('3.65') ? '3.65' : rates[0];
   return { type: 9, data: { custom_id: submitId, title: 'Customer quote', components: [
     { type: 18, label: 'Item', component: { type: 3, custom_id: 'item', required: true, placeholder: 'Choose one item',
       options: quotes.map((quote, index) => ({ label: quote.name.slice(0, 100), value: String(index), default: quotes.length === 1 })) } },
-    { type: 18, label: 'CNY to VND selling rate (private)', component: { type: 4, custom_id: 'selling_rate', style: 1, required: true,
-      max_length: 16, value: rate, placeholder: '3.65 or 3650 VND per CNY' } },
+    { type: 18, label: 'CNY to VND rate', component: { type: 3, custom_id: 'selling_rate', required: true,
+      placeholder: 'Choose one rate', options: rates.map(value => ({ label: value, value, default: value === rate })) } },
   ] } };
 }
 
@@ -67,7 +74,10 @@ function copiedText(message, applicationId) {
   if (!ownMessage(message, applicationId)) return '';
   const text = String(message.content || '').match(/^Copy this quote:\n```text\n([\s\S]{1,1800})\n```$/)?.[1] || '';
   const lines = text.split('\n');
-  return lines.length === 3 && lines[0] && /^₫[\d,]+$/.test(lines[1]) && listing.test(lines[2]) ? text : '';
+  const legacy = lines.length === 3 && /^₫[\d,]+$/.test(lines[1]) && listing.test(lines[2]);
+  const standard = lines.length === 4 && /^BUFF: ¥[\d,]+\.\d{2} CNY$/.test(lines[1]) &&
+    /^\d+\.\d{2,3} → ₫[\d,]+$/.test(lines[2]) && listing.test(lines[3]);
+  return lines[0] && (legacy || standard) ? text : '';
 }
 
 export function profitCustomerInteraction(interaction, applicationId) {
@@ -82,9 +92,11 @@ export function profitCustomerInteraction(interaction, applicationId) {
     const quotes = profitCustomerQuotes(interaction.message.content), selected = value(interaction.data.components, 'item');
     const quote = /^\d{1,2}$/.test(String(selected ?? '')) ? quotes[Number(selected)] : null;
     const rate = sellingRate(value(interaction.data.components, 'selling_rate'));
-    if (!quote || rate === null) return { type: 4, data: { content: 'Choose an item and enter a selling rate such as 3.65 or 3650 (allowed: 1.00–10.00).', flags: 68, allowed_mentions: { parse: [] } } };
+    if (!quote || rate === null || !quoteRates(quotes).includes(rateLabel(rate))) return { type: 4, data: {
+      content: 'Choose an item and one of the listed rates. Use Custom buying rate to enter a different rate.', flags: 68, allowed_mentions: { parse: [] } } };
     const amount = convertCnyCentsToVnd(quote.cnyCents, rate);
-    return amount === null ? error() : copyReady(`${quote.name}\n₫${amount.toLocaleString('en-US')}\n${quote.url}`);
+    const cny = `${(quote.cnyCents / 100n).toLocaleString('en-US')}.${String(quote.cnyCents % 100n).padStart(2, '0')}`;
+    return amount === null ? error() : copyReady(`${quote.name}\nBUFF: ¥${cny} CNY\n${rateLabel(rate)} → ₫${amount.toLocaleString('en-US')}\n${quote.url}`);
   }
   if (interaction.type === 3 && id === phoneId) {
     const text = copiedText(interaction.message, applicationId);
