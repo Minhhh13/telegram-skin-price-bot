@@ -4,7 +4,7 @@ import { aiItemSupportedByText, catalogHintsForText, parseRequest, requestsFloat
 import { interpretItems, requestedRates } from './supabase/functions/skin-price-webhook/gemini.mjs';
 import { firstDiscordImage } from './discord-images.mjs';
 import { isProfitChannel, profitChannelIds } from './profit-channels.mjs';
-import { profitCustomerButton, profitCustomerInteraction } from './profit-customer.mjs';
+import { profitCustomerButton, profitCustomerInteraction, profitCustomerQuotes } from './profit-customer.mjs';
 
 const api = 'https://discord.com/api/v10';
 const noMentions = { parse: [] };
@@ -18,14 +18,19 @@ const setupModal = () => ({ type: 9, data: { custom_id: 'tdprofit:setup-submit',
 ] } });
 const modalValue = (components, id) => {
   for (const outer of components || []) {
-    if (outer.component?.custom_id === id) return outer.component.value || '';
+    if (outer.component?.custom_id === id) return outer.component.values?.[0] ?? outer.component.value ?? '';
     const found = outer.components?.find((item) => item.custom_id === id);
-    if (found) return found.value || '';
+    if (found) return found.values?.[0] ?? found.value ?? '';
   }
   return '';
 };
 const actorId = (interaction) => interaction.member?.user?.id || interaction.user?.id || '';
 const safe = (value) => String(value).replace(/@/g, '@\u200b').replace(/([\\`*_~|])/g, '\\$1');
+const buyingRateModal = (quotes) => ({ type: 9, data: { custom_id: 'tdprofit:buy-rate-submit', title: 'Custom CNY buying rate', components: [
+  { type: 18, label: 'Item', component: { type: 3, custom_id: 'item', required: true, placeholder: 'Choose one item',
+    options: quotes.map((quote, index) => ({ label: quote.name.slice(0, 100), value: String(index), default: quotes.length === 1 })) } },
+  input('buying_rate', 'CNY to VND buying rate', '3.65 or 3650', 16),
+] } });
 const resultControls = (owner, content) => [{ type: 1, components: [
   { type: 2, style: 2, custom_id: 'tdprofit:refresh', label: 'Refresh' },
   ...[profitCustomerButton(content)].filter(Boolean),
@@ -183,7 +188,10 @@ export function createProfitDiscordHandler(config, fetchFn = fetch, service = nu
         components: [{ type: 1, components: [{ type: 2, style: 1, label: 'Check my profit', custom_id: 'tdprofit:check' }] }],
         flags: 4, allowed_mentions: noMentions,
       } });
-      if (id === 'tdprofit:buy-rate') return response({ type: 9, data: { custom_id: 'tdprofit:buy-rate-submit', title: 'Custom CNY buying rate', components: [input('buying_rate', 'CNY to VND buying rate', '3.65 or 3650', 16)] } });
+      if (id === 'tdprofit:buy-rate') {
+        const quotes = profitCustomerQuotes(interaction.message.content);
+        return response(quotes.length ? buyingRateModal(quotes) : privateReply('Refresh this result to choose an item with an available BUFF price.'));
+      }
       let selected = '';
       if (id === 'tdprofit:choose') {
         selected = interaction.data.values?.[0] || '';
@@ -194,11 +202,17 @@ export function createProfitDiscordHandler(config, fetchFn = fetch, service = nu
     }
     if (interaction.type === 5 && id === 'tdprofit:buy-rate-submit') {
       const query = queryFromMessage(interaction.message, config.applicationId);
-      const entered = modalValue(interaction.data.components, 'buying_rate').trim();
-      const value = /^\d+(?:\.\d{1,3})?$/.test(entered) ? Number(entered) : NaN;
-      const rate = value >= 100 ? value / 1000 : value;
-      if (!query || !Number.isFinite(rate) || rate < 2 || rate > 6) return response(privateReply('Enter a buying rate such as 3.65 or 3650 (allowed: 2.00–6.00).'));
-      const next = `${parseRequest(query).items.join('; ')} rate ${rate}`;
+      const quotes = query ? profitCustomerQuotes(interaction.message.content) : [];
+      const item = modalValue(interaction.data.components, 'item');
+      // Older single-item forms had no item field. Never guess for old multi-item forms.
+      const index = item === '' && quotes.length === 1 ? 0 : /^\d{1,2}$/.test(String(item)) ? Number(item) : -1;
+      const quote = quotes[index];
+      if (!quote) return response(privateReply('Choose an item from this result. Reopen Custom buying rate if the item list is missing.'));
+      const entered = String(modalValue(interaction.data.components, 'buying_rate')).trim().replaceAll(' ', '');
+      const rate = /^\d{4,5}$/.test(entered) ? Number(entered) / 1000
+        : /^\d{1,2}(?:[.,]\d{1,3})?$/.test(entered) ? Number(entered.replace(',', '.')) : NaN;
+      if (!Number.isFinite(rate) || rate < 2 || rate > 6) return response(privateReply('Enter a buying rate such as 3.65 or 3650 (allowed: 2.00–6.00).'));
+      const next = `${quote.name} rate ${rate}`;
       return deferred(interaction, () => service.lookup(userId, next));
     }
     return response(privateReply('Use /setup to save your Account ID, then send skin names or photos. The owner can use /ratechange to set the shared rate.'));
