@@ -262,7 +262,8 @@ export function isLikelySkinRequest(text) {
   return tokens.some((token) => wears.has(token)) && tokens.some((token) => token.length >= 4 && !ignored.has(token) && !special.has(token));
 }
 
-export function catalogHintsForText(text, limit = 16) {
+export function catalogHintsForText(text, limit = 16, names = null) {
+  const entries = catalogEntries(names);
   const tokens = [...new Set(requestTokens(text).filter((token) =>
     !ignored.has(token) && token !== 'the' && token !== 'phase' && !/^[1-4]$/.test(token)))];
   if (!tokens.length) return [];
@@ -270,7 +271,7 @@ export function catalogHintsForText(text, limit = 16) {
     ...requestedWeapon(tokens.filter((token) => !special.has(token))).names]);
   const wear = tokens.find((token) => wears.has(token)) || '';
   const ranked = [];
-  for (const entry of catalog) {
+  for (const entry of entries) {
     if (!entry.weapon || !entry.finish) continue;
     if (allowedWeapons.size && !allowedWeapons.has(entry.weapon)) continue;
     if (wear && entry.wear !== wear) continue;
@@ -294,7 +295,7 @@ export function catalogHintsForText(text, limit = 16) {
     seen.add(base);
     return true;
   }).map(({ name }) => name);
-  const agentHints = rankAgentCandidates(text, catalogAgents).map(({ entry }) => entry.name);
+  const agentHints = rankAgentCandidates(text, entries).map(({ entry }) => entry.name);
   return [...new Set([...agentHints, ...skinHints])].slice(0, limit);
 }
 
@@ -556,18 +557,19 @@ function resolveFromCatalog(query, entries) {
   return { ambiguous: matches.slice(0, 5).map((r) => r.name), more: matches.length > 5 };
 }
 
-export function aiItemSupportedByText(source, item) {
+export function aiItemSupportedByText(source, item, names = null) {
+  const entries = catalogEntries(names);
   const sourceTokens = requestTokens(source);
   const candidate = entryFor(item);
   if (/^(?:Sticker(?: Slab)?|Sealed Graffiti|(?:Souvenir )?Charm|Patch|(?:StatTrak™ )?Music Kit|Autograph Capsule)\s*\|/.test(item) ||
       /\b(?:Case|Capsule|Package)$/.test(item)) {
-    return resolveCollectible(source)?.name === item;
+    return resolveCollectible(source, names || itemNames)?.name === item;
   }
   if (candidate.kind === 'agent') {
     let parts;
     try { parts = parseRequest(source).items; } catch { return false; }
     return parts.some((part) => {
-      const matches = rankAgentCandidates(part, catalogAgents);
+      const matches = rankAgentCandidates(part, entries);
       return matches.length && matches[0].entry.name === item &&
         (matches.length === 1 || matches[0].score > matches[1].score);
     });
@@ -593,7 +595,7 @@ export function aiItemSupportedByText(source, item) {
   const exactFinishWord = candidate.finishTokens.find((token) => token.length >= 4 &&
     token !== 'the' && sourceTokens.includes(token));
   if (candidate.weapon && allowedWeapons.has(candidate.weapon) && exactFinishWord) {
-    const finishes = new Set(catalog.filter((entry) => entry.weapon === candidate.weapon &&
+    const finishes = new Set(entries.filter((entry) => entry.weapon === candidate.weapon &&
       entry.souvenir === candidate.souvenir && entry.stattrak === candidate.stattrak &&
       entry.finishTokens.includes(exactFinishWord)).map((entry) => entry.finish));
     if (finishes.size === 1 && finishes.has(candidate.finish)) return true;
@@ -606,7 +608,7 @@ export function aiItemSupportedByText(source, item) {
   // The same unique, constraint-preserving typo match used for a direct
   // request can validate a Gemini candidate with a transposed finish word.
   try {
-    return parseRequest(source).items.some((part) => fuzzyUniqueMatch(part)?.name === item);
+    return parseRequest(source).items.some((part) => fuzzyUniqueMatch(part, names || itemNames)?.name === item);
   } catch { return false; }
 }
 
@@ -835,18 +837,6 @@ export async function buildReply(input, botUsername = '', fetchFn = fetch, now =
   try { parsed = parseRequest(input, botUsername); }
   catch (error) { return [escapeHtml(error.message) + '\n\n' + helpText]; }
   return buildParsedReply(parsed, fetchFn, now, names);
-}
-
-export function shouldReply(message, botUsername = '') {
-  const text = message?.text || message?.caption || '';
-  if (/^\/(?:price|p|find|start|help)(?:@\w+)?(?:\s|$)/i.test(text)) {
-    const commandTarget = text.match(/^\/\w+@(\w+)/)?.[1];
-    return !commandTarget || commandTarget.toLowerCase() === botUsername.toLowerCase();
-  }
-  return Boolean(botUsername && (
-    text.toLowerCase().includes(`@${botUsername.toLowerCase()}`) ||
-    message?.reply_to_message?.from?.username?.toLowerCase() === botUsername.toLowerCase()
-  ));
 }
 
 export { DEFAULT_RATES, extractPattern as extractItemVariant };

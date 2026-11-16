@@ -1,6 +1,6 @@
 import { verifyDiscord, splitDiscord } from './discord.mjs';
-import { createTradeDeskClient, formatProfitItem, identityId, itemLabel, PROFIT_DEFAULT_RATES, profitBuyingRates, profitQuery, queryFooter, queryFromMessage, resolveProfitRequest, TradeDeskError } from './profit.mjs';
-import { aiItemSupportedByText, catalogHintsForText, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
+import { createTradeDeskClient, formatProfitItem, identityId, itemLabel, normalizeProfitIdentity, PROFIT_DEFAULT_RATES, profitBuyingRates, profitQuery, queryFooter, queryFromMessage, resolveProfitRequest, TradeDeskError } from './profit.mjs';
+import { aiItemSupportedByText, catalogHintsForText, extractItemVariant, parseRequest, requestsFloatFilter } from './supabase/functions/skin-price-webhook/skin-price.mjs';
 import { interpretItems, requestedRates } from './supabase/functions/skin-price-webhook/gemini.mjs';
 import { firstDiscordImage } from './discord-images.mjs';
 import { isProfitChannel, profitChannelIds } from './profit-channels.mjs';
@@ -40,8 +40,19 @@ const resultControls = (owner, content) => [{ type: 1, components: [
 ] }];
 const candidateControls = (items) => [{ type: 1, components: [{ type: 3, custom_id: 'tdprofit:choose',
   placeholder: 'Choose an item to check', min_values: 1, max_values: 1,
-  options: items.slice(0, 5).map((item) => ({ label: itemLabel(item).slice(0, 100), value: identityId(item) })),
+  options: items.slice(0, 25).map((item) => ({ label: itemLabel(item).slice(0, 100), value: identityId(item) })),
 }] }];
+
+// Interpretation can repair unrecognized text, but cannot decide a catalogue
+// ambiguity or change an explicitly requested style, family or wear.
+const canInterpret = (entry) => !entry.candidates.length && (!entry.reason || entry.reason === 'not_found');
+function supportedProfitInterpretation(source, candidate, catalogue) {
+  const wanted = extractItemVariant(source), proposed = extractItemVariant(candidate);
+  if (wanted.needDopplerFamily || proposed.needDopplerFamily || wanted.pattern !== proposed.pattern) return false;
+  if (/\bdop(?:p|pler)?\b/i.test(wanted.lookup) &&
+      /\bgamma\b/i.test(wanted.lookup) !== /\bgamma\b/i.test(proposed.lookup)) return false;
+  return aiItemSupportedByText(wanted.lookup, proposed.lookup, catalogue.names);
+}
 
 export function createProfitService(config, fetchFn = fetch) {
   const client = createTradeDeskClient({ url: config.tradeDeskUrl, apiKey: config.tradeDeskKey, guildId: config.guildId }, fetchFn);
@@ -51,6 +62,10 @@ export function createProfitService(config, fetchFn = fetch) {
   async function lookup(userId, query = '', selectedId = '', { image = null, loadImage = null, rawText = query, messageLimit = 1900 } = {}) {
     if (query.length > 1100) throw new TradeDeskError('Send a skin request of at most 1100 characters.', 400);
     const replyLimit = Math.min(1900, Math.max(1500, Number.isSafeInteger(messageLimit) ? messageLimit : 1900));
+    const checkFooterSize = () => {
+      if (queryFooter(query).length > replyLimit - 300) throw new TradeDeskError('Send a shorter skin request so its result can fit in Discord.', 400);
+    };
+    checkFooterSize();
     const status = await client.status(userId);
     if (!status.linked) return [setupRequired()];
     lastRate = status.rate || lastRate;
@@ -71,14 +86,38 @@ export function createProfitService(config, fetchFn = fetch) {
         catch (error) { throw new TradeDeskError(error.message, 400); }
         if (request.rates.some((rate) => !/^\d+(?:\.\d{1,3})?$/.test(String(rate)))) throw new TradeDeskError('Use at most three decimal places for a CNY buying rate.', 400);
       } else request = query.trim() ? await resolveProfitRequest(query, catalogue) : { items: [], rates: PROFIT_DEFAULT_RATES, unresolved: [] };
-      if (config.geminiKey && (image || !request.items.length)) {
-        let aiItems = await interpretItems({ text: rawText, image, candidates: catalogHintsForText(query), apiKey: config.geminiKey, fetchFn })
+      const targets = request.unresolved.filter(canInterpret);
+      if (config.geminiKey && (image || targets.length)) {
+        const hints = [...new Set((image ? [query] : targets.map((entry) => entry.query))
+          .flatMap((text) => catalogHintsForText(text, 16, catalogue.names)))].slice(0, 16);
+        const aiItems = await interpretItems({ text: rawText, image, candidates: hints, apiKey: config.geminiKey, fetchFn })
           .catch(() => null);
-        if (aiItems && !image) aiItems = aiItems.filter((candidate) => aiItemSupportedByText(query, candidate));
-        if (aiItems?.length) {
+        if (aiItems?.length && image) {
           query = `${aiItems.join('; ')} rates ${request.rates.join(', ')}`;
           if (query.length > 1100) throw new TradeDeskError('That photo contains too many long item names. Send a smaller group of items.', 400);
           request = await resolveProfitRequest(query, catalogue);
+        } else if (aiItems?.length) {
+          const recovered = new Map(request.items.map((item) => [identityId(item), item]));
+          const unresolved = [], assumedFactoryNew = new Set(request.assumedFactoryNew || []);
+          let changed = false;
+          for (const entry of request.unresolved) {
+            const candidates = canInterpret(entry) ? aiItems.filter((candidate) => supportedProfitInterpretation(entry.query, candidate, catalogue)) : [];
+            if (!candidates.length) { unresolved.push(entry); continue; }
+            let repaired;
+            try { repaired = await resolveProfitRequest(`${candidates.join('; ')} rates ${request.rates.join(', ')}`, catalogue); }
+            catch { unresolved.push(entry); continue; }
+            if (!repaired.items.length && !repaired.unresolved.some((part) => part.candidates.length)) { unresolved.push(entry); continue; }
+            for (const item of repaired.items) recovered.set(identityId(item), item);
+            unresolved.push(...repaired.unresolved);
+            for (const item of repaired.assumedFactoryNew || []) assumedFactoryNew.add(item);
+            changed = true;
+          }
+          if (recovered.size > 10) throw new TradeDeskError('Send a more specific wear or at most 10 items per check.', 400);
+          if (changed) {
+            request = { ...request, items: [...recovered.values()], unresolved, assumedFactoryNew };
+            query = `${[...request.items.map(itemLabel), ...unresolved.map((entry) => entry.query)].join('; ')} rates ${request.rates.join(', ')}`;
+            if (query.length > 1100) throw new TradeDeskError('Send a smaller group of items to keep the result refreshable.', 400);
+          }
         } else if (image && query.trim()) {
           try { request = await resolveProfitRequest(query, catalogue); }
           catch { return [{ content: 'I could not read an item from that photo. Please send a clear item title or type its name.', components: [] }]; }
@@ -86,14 +125,23 @@ export function createProfitService(config, fetchFn = fetch) {
       }
       if (!query.trim() || !request.items.length && !request.unresolved.length) return [{ content: 'I could not read an item from that photo. Please send a clear item title or type its name.', components: [] }];
     }
+    checkFooterSize();
     const messages = [];
     if (request.items.length) {
       const result = await client.quotes(userId, request.items);
       if (!result || !Array.isArray(result.items)) throw new TradeDeskError('Trade Desk prices are temporarily unavailable.');
       lastRate = result.rate;
-      const requested = new Set(request.items.map(identityId));
-      const quotes = result.items.filter((item) => requested.has(identityId(item)));
-      if (quotes.length !== request.items.length || new Set(quotes.map(identityId)).size !== requested.size) throw new TradeDeskError('Trade Desk could not confirm every requested item. Please refresh.');
+      const requested = new Set(request.items.map(identityId)), confirmed = new Map();
+      for (const item of result.items) {
+        const normalized = normalizeProfitIdentity(item);
+        if (!normalized) throw new TradeDeskError('Trade Desk could not confirm every requested item. Please refresh.');
+        const id = identityId(normalized);
+        if (!requested.has(id)) throw new TradeDeskError('Trade Desk could not confirm every requested item. Please refresh.');
+        if (confirmed.has(id)) throw new TradeDeskError('Trade Desk could not confirm every requested item. Please refresh.');
+        confirmed.set(id, item);
+      }
+      if (confirmed.size !== requested.size) throw new TradeDeskError('Trade Desk could not confirm every requested item. Please refresh.');
+      const quotes = request.items.map((item) => ({ ...confirmed.get(identityId(item)), game: item.game, name: item.name, phase: item.phase }));
       const header = `**Your Trade Desk profit check**\n${Number(result.rate?.vndPerUsd) > 0
         ? `Weekly USD→VND: **${Number(result.rate.vndPerUsd).toLocaleString('en-US')}**`
         : 'Weekly USD→VND: not set'}`;

@@ -1,16 +1,9 @@
 import { createServer } from 'node:http';
-import { createHandler } from './supabase/functions/skin-price-webhook/handler.mjs';
 import { createDiscordHandler, registerDiscordCommand } from './discord.mjs';
 import { startDiscordGateway } from './discord-gateway.mjs';
 import { createProfitDiscordHandler, createProfitService, registerProfitCommands } from './profit-discord.mjs';
 import { isProfitChannel, profitChannelIds } from './profit-channels.mjs';
 
-const handler = createHandler({
-  token: process.env.TELEGRAM_SKIN_BOT_TOKEN || '',
-  secret: process.env.TELEGRAM_SKIN_WEBHOOK_SECRET || '',
-  botUsername: process.env.TELEGRAM_SKIN_BOT_USERNAME || '',
-  geminiKey: process.env.GEMINI_API_KEY || '',
-});
 const port = Number(process.env.PORT || 10000);
 const discordConfig = {
   publicKey: process.env.DISCORD_PUBLIC_KEY || '',
@@ -28,32 +21,11 @@ const discordConfig = {
 const discordHandler = createDiscordHandler(discordConfig);
 const profitService = profitChannelIds(discordConfig).length ? createProfitService(discordConfig) : null;
 const profitHandler = profitService ? createProfitDiscordHandler(discordConfig, fetch, profitService) : null;
-const messengerConfig = {
-  cookies: process.env.MESSENGER_COOKIES || '',
-  threadId: process.env.MESSENGER_THREAD_ID || '',
-  geminiKey: process.env.GEMINI_API_KEY || '',
-};
 let discordClient = null;
-let messengerListener = null;
 
 async function connectIntegrations() {
   if (profitService && discordConfig.tradeDeskKey) {
     void profitService.primeRate().catch(() => console.warn('Shared profit conversion rate will load on the next check'));
-  }
-  const token = process.env.TELEGRAM_SKIN_BOT_TOKEN;
-  const secret = process.env.TELEGRAM_SKIN_WEBHOOK_SECRET;
-  const webhook = process.env.TELEGRAM_SKIN_WEBHOOK_URL;
-  if (token && secret && webhook) {
-    try {
-      const response = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ url: webhook, secret_token: secret, allowed_updates: ['message'] }),
-        signal: AbortSignal.timeout(9000),
-      });
-      const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.description || `HTTP ${response.status}`);
-      console.log('Telegram webhook connected');
-    } catch (error) { console.error('Telegram webhook setup failed:', error instanceof Error ? error.message : String(error)); }
   }
   try {
     await registerDiscordCommand(discordConfig);
@@ -65,15 +37,6 @@ async function connectIntegrations() {
   } catch { console.error('Discord profit command setup failed'); }
   try { discordClient = await startDiscordGateway(discordConfig, profitService); }
   catch (error) { console.error('Discord channel listener setup failed:', error instanceof Error ? error.message : String(error)); }
-  if (process.env.MESSENGER_ENABLED === 'false') {
-    console.log('Messenger listener paused');
-  } else if (process.env.MESSENGER_BACKEND === 'go') {
-    const { startGoMessengerListener } = await import('./messenger-go.mjs');
-    messengerListener = startGoMessengerListener(messengerConfig);
-  } else {
-    const { startMessengerSupervisor } = await import('./messenger-supervisor.mjs');
-    messengerListener = startMessengerSupervisor(messengerConfig);
-  }
 }
 
 const server = createServer(async (req, res) => {
@@ -82,7 +45,7 @@ const server = createServer(async (req, res) => {
     res.end('ok');
     return;
   }
-  if (req.url !== '/telegram' && req.url !== '/discord') {
+  if (req.url !== '/discord') {
     res.writeHead(404);
     res.end('Not found');
     return;
@@ -98,25 +61,14 @@ const server = createServer(async (req, res) => {
     }
     chunks.push(chunk);
   }
-  if (req.url === '/discord') {
-    const body = Buffer.concat(chunks).toString('utf8');
-    let profitTarget = false;
-    try { const interaction = JSON.parse(body); profitTarget = isProfitChannel(discordConfig, interaction.guild_id, interaction.channel_id); } catch {}
-    const result = await (profitTarget ? profitHandler : discordHandler)(new Headers(req.headers), body);
-    res.writeHead(result.status, { 'content-type': result.status === 200 ? 'application/json' : 'text/plain' });
-    res.end(result.body);
-    return;
-  }
-  const request = new Request(`http://localhost:${port}/telegram`, {
-    method: req.method,
-    headers: req.headers,
-    body: req.method === 'GET' || req.method === 'HEAD' ? undefined : Buffer.concat(chunks),
-  });
-  const response = await handler(request);
-  res.writeHead(response.status, Object.fromEntries(response.headers));
-  res.end(await response.text());
+  const body = Buffer.concat(chunks).toString('utf8');
+  let profitTarget = false;
+  try { const interaction = JSON.parse(body); profitTarget = isProfitChannel(discordConfig, interaction.guild_id, interaction.channel_id); } catch {}
+  const result = await (profitTarget ? profitHandler : discordHandler)(new Headers(req.headers), body);
+  res.writeHead(result.status, { 'content-type': result.status === 200 ? 'application/json' : 'text/plain' });
+  res.end(result.body);
 }).listen(port, '0.0.0.0', () => {
-  console.log(`Skin price webhook listening on ${port}`);
+  console.log(`Discord skin price bot listening on ${port}`);
   void connectIntegrations();
 });
 
@@ -124,12 +76,12 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log('Shutting down chat listeners');
+  console.log('Shutting down Discord listener');
   discordClient?.destroy();
   const timeout = setTimeout(() => process.exit(1), 15_000);
   timeout.unref();
   const httpClosed = new Promise((resolve) => server.close(resolve));
-  await Promise.allSettled([httpClosed, messengerListener?.stop()]);
+  await httpClosed;
   clearTimeout(timeout);
   process.exit(0);
 }
