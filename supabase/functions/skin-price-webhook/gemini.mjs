@@ -7,23 +7,6 @@ function toBase64(bytes) {
   return btoa(binary);
 }
 
-export async function telegramPhoto(photo, token, fetchFn = fetch) {
-  if (!Array.isArray(photo) || !photo.length) return null;
-  const chosen = [...photo].filter((p) => p.file_size === undefined || p.file_size <= MAX_IMAGE_BYTES).at(-1);
-  if (!chosen?.file_id) throw new Error('Photo is too large. Send an image under 5 MB.');
-  const infoResponse = await fetchFn(`https://api.telegram.org/bot${token}/getFile`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ file_id: chosen.file_id }), signal: AbortSignal.timeout(9000),
-  });
-  if (!infoResponse.ok) throw new Error(`Telegram getFile HTTP ${infoResponse.status}`);
-  const info = await infoResponse.json();
-  if (!info.ok || !/^[A-Za-z0-9_./-]+$/.test(info.result?.file_path || '')) throw new Error('Telegram photo unavailable.');
-  const photoResponse = await fetchFn(`https://api.telegram.org/file/bot${token}/${info.result.file_path}`, { signal: AbortSignal.timeout(9000) });
-  if (!photoResponse.ok) throw new Error(`Telegram photo HTTP ${photoResponse.status}`);
-  const bytes = new Uint8Array(await photoResponse.arrayBuffer());
-  return imageFromBytes(bytes);
-}
-
 export function imageFromBytes(bytes) {
   if (bytes.length > MAX_IMAGE_BYTES) throw new Error('Photo is too large. Send an image under 5 MB.');
   const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8;

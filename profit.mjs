@@ -11,6 +11,7 @@ export const identityKey = (item) => `${item.game || '730'}\u0000${item.name}\u0
 export const identityId = (item) => createHash('sha256').update(identityKey(item)).digest('hex').slice(0, 24);
 export const itemLabel = (item) => `${item.name}${item.phase ? ` · ${item.phase}` : ''}`;
 const exactProfitCatalogues = new WeakMap();
+const nameKey = value => String(value).normalize('NFKC').toLowerCase().replace(/[\p{P}\p{S}]+/gu, ' ').replace(/\s+/g, ' ').trim();
 const PROFIT_RATE_SUFFIX = /\b(rates?|at|@)\s*[:=]?\s*((?:\d+(?:\.\d+)?\s*(?:,|\/|&|\band\b)?\s*)+)$/i;
 function parseProfitRateSuffix(text) {
   let rates;
@@ -22,15 +23,17 @@ function parseProfitRateSuffix(text) {
 function exactProfitCatalogue(catalogue) {
   const saved = exactProfitCatalogues.get(catalogue);
   if (saved) return saved;
-  const literal = new Map(), foldedLiteral = new Map(), labels = new Map(), foldedLabels = new Map();
+  const literal = new Map(), foldedLiteral = new Map(), labels = new Map(), foldedLabels = new Map(), normalized = new Map(), normalizedLabels = new Map();
   const add = (map, key, item) => { if (!map.has(key)) map.set(key, []); map.get(key).push(item); };
   for (const item of catalogue.items) {
     add(literal, item.name, item); add(foldedLiteral, item.name.toLowerCase(), item);
+    add(normalized, nameKey(item.name), item);
     if (item.phase) for (const label of [itemLabel(item), `${item.name} ${item.phase}`]) {
       add(labels, label, item); add(foldedLabels, label.toLowerCase(), item);
+      add(normalizedLabels, nameKey(label), item);
     }
   }
-  const prepared = { literal, foldedLiteral, labels, foldedLabels };
+  const prepared = { literal, foldedLiteral, labels, foldedLabels, normalized, normalizedLabels };
   if (Object.isFrozen(catalogue.names) || Object.isFrozen(catalogue.items)) exactProfitCatalogues.set(catalogue, prepared);
   return prepared;
 }
@@ -45,13 +48,18 @@ function exactProfitRequest(text, catalogue) {
     const folded = index.foldedLiteral.get(value.toLowerCase());
     if (folded) return { rows: folded, explicitPhase: false };
     const foldedLabel = index.foldedLabels.get(value.toLowerCase());
-    return foldedLabel ? { rows: foldedLabel, explicitPhase: true } : null;
+    if (foldedLabel) return { rows: foldedLabel, explicitPhase: true };
+    const normalized = index.normalized.get(nameKey(value));
+    if (normalized) return { rows: normalized, explicitPhase: false };
+    const normalizedLabel = index.normalizedLabels.get(nameKey(value));
+    return normalizedLabel ? { rows: normalizedLabel, explicitPhase: true } : null;
   };
-  let match = find(raw), rates = PROFIT_DEFAULT_RATES;
+  const findRequest = value => find(value) || find(value.replace(/^(?:(?:please|can you|could you)\s+)*(?:(?:price(?:\s+check)?|check|quote|lookup|look\s+up)(?:\s+(?:for|of))?\s+)+/i, '').trim());
+  let match = findRequest(raw), rates = PROFIT_DEFAULT_RATES;
   if (!match) {
     const suffix = raw.match(PROFIT_RATE_SUFFIX);
     if (suffix) {
-      match = find(raw.slice(0, suffix.index).trim());
+      match = findRequest(raw.slice(0, suffix.index).trim());
       if (match) {
         rates = parseProfitRateSuffix(suffix[0]);
       }
@@ -63,14 +71,28 @@ function exactProfitRequest(text, catalogue) {
   const plain = rows.filter((item) => !item.phase);
   if (distinctNames.size > 1 || !match.explicitPhase && !plain.length) return {
     items: [], rates, assumedFactoryNew: new Set(), unresolved: [{ query: raw,
-      message: distinctNames.size > 1 ? 'Choose the intended item.' : 'Choose a Doppler style.', candidates: rows.slice(0, 5) }],
+      reason: 'ambiguous', message: distinctNames.size > 1 ? 'Choose the intended item.' : 'Choose a Doppler style.', candidates: rows.slice(0, 25) }],
   };
   const items = match.explicitPhase ? rows : plain;
   if (items.length > 10) throw new TradeDeskError('Send a more specific wear or at most 10 items per check.', 400);
   return { items, rates, unresolved: [], assumedFactoryNew: new Set() };
 }
-const cleanIdentity = (item) => item && item.game === '730' && typeof item.name === 'string' && item.name.length > 0 && item.name.length <= 512 &&
-  (item.phase == null || phases.has(item.phase)) ? { game: '730', name: item.name, phase: item.phase || null } : null;
+export function normalizeProfitIdentity(item) {
+  if (!item || !['730', 730].includes(item.game) || typeof item.name !== 'string') return null;
+  // Trade Desk's wire identity is literal. Normalize only search keys, never
+  // the title sent back for a price (including Unicode and outer spaces).
+  const name = item.name;
+  if (!name.trim() || name.length > 512 || /[\x00-\x1f\x7f]/.test(name)) return null;
+  let phase = null;
+  if (item.phase != null && item.phase !== '') {
+    if (typeof item.phase !== 'string') return null;
+    const key = item.phase.trim().toLowerCase().replace(/[\s_-]+/g, '');
+    phase = /^[pP](?:hase)?[1-4]$/.test(key) ? `Phase ${key.at(-1)}`
+      : ({ ruby: 'Ruby', sapphire: 'Sapphire', emerald: 'Emerald', blackpearl: 'Black Pearl' })[key];
+    if (!phases.has(phase)) return null;
+  }
+  return { game: '730', name, phase };
+}
 
 export function createTradeDeskClient({ url, apiKey, guildId }, fetchFn = fetch, now = Date.now) {
   const base = new URL(url || 'https://tradedesk.click');
@@ -100,15 +122,19 @@ export function createTradeDeskClient({ url, apiKey, guildId }, fetchFn = fetch,
           cached.until = now() + Math.min(60_000, Math.max(1000, Number(result.ttlMs) || 60_000));
           return cached;
         }
-        if (!Array.isArray(result.items) || result.items.length > 100_000) throw new TradeDeskError('Trade Desk catalogue is temporarily unavailable.');
+        if (!Array.isArray(result.items) || result.items.length > 200_000) throw new TradeDeskError('Trade Desk catalogue is temporarily unavailable.');
         const unique = new Map();
+        let rejected = 0, duplicates = 0;
         for (const item of result.items) {
-          const valid = cleanIdentity(item);
-          if (valid) unique.set(identityKey(valid), valid);
+          const valid = normalizeProfitIdentity(item);
+          if (!valid) { rejected++; continue; }
+          if (unique.has(identityKey(valid))) duplicates++;
+          unique.set(identityKey(valid), valid);
         }
         if (!unique.size) throw new TradeDeskError('Trade Desk catalogue is temporarily unavailable.');
         const items = Object.freeze([...unique.values()].map(Object.freeze));
         cached = { version: typeof result.version === 'string' ? result.version : '', items, names: Object.freeze([...new Set(items.map((item) => item.name))]),
+          coverage: Object.freeze({ received: result.items.length, identities: items.length, rejected, duplicates }),
           byId: new Map(items.map((item) => [identityId(item), item])),
           until: now() + Math.min(60_000, Math.max(1000, Number(result.ttlMs) || 60_000)) };
         return cached;
@@ -159,7 +185,12 @@ export async function resolveProfitRequest(text, catalogue) {
   for (const query of parsed.items) {
     const variant = extractItemVariant(query);
     if (variant.needDopplerFamily) {
-      unresolved.push({ query, message: `Choose Doppler or Gamma Doppler for ${variant.pattern}.`, candidates: [] });
+      const candidates = new Map();
+      for (const family of ['Doppler', 'Gamma Doppler']) {
+        const familyRequest = await resolveProfitRequest(`${variant.lookup} ${family} ${variant.pattern}`, catalogue);
+        for (const item of familyRequest.items) candidates.set(identityKey(item), item);
+      }
+      unresolved.push({ query, reason: 'missing_family', message: `Choose Doppler or Gamma Doppler for ${variant.pattern}.`, candidates: [...candidates.values()].slice(0, 25) });
       continue;
     }
     const match = await resolveItem(variant.lookup, undefined, catalogue.names);
@@ -170,13 +201,13 @@ export async function resolveProfitRequest(text, catalogue) {
       if (!variant.pattern && rows.some((item) => item.phase)) {
         const plain = rows.filter((item) => !item.phase);
         if (plain.length) for (const item of plain) selected.set(identityKey(item), item);
-        else unresolved.push({ query, message: 'Choose a Doppler style.', candidates: rows.slice(0, 5) });
+        else unresolved.push({ query, reason: 'ambiguous', message: 'Choose a Doppler style.', candidates: rows.slice(0, 25) });
       } else if (rows.length) for (const item of rows) selected.set(identityKey(item), item);
-      else unresolved.push({ query, message: 'That exact style is unavailable in the Trade Desk catalogue.', candidates: [] });
+      else unresolved.push({ query, reason: 'missing_variant', message: 'That exact style is unavailable in the Trade Desk catalogue.', candidates: [] });
     } else {
       const candidates = (match.ambiguous || catalogSuggestionsForText(variant.lookup, 5, catalogue.names))
         .flatMap((name) => expand(name, variant.pattern)).slice(0, 5);
-      unresolved.push({ query, message: candidates.length ? 'Choose the intended item.' : 'No matching Trade Desk item found. Try more of its name.', candidates });
+      unresolved.push({ query, reason: candidates.length ? 'ambiguous' : 'not_found', message: candidates.length ? 'Choose the intended item.' : 'No matching Trade Desk item found. Try more of its name.', candidates });
     }
   }
   if (selected.size > 10) throw new TradeDeskError('Send a more specific wear or at most 10 items per check.', 400);
@@ -268,9 +299,21 @@ export function formatProfitItem(item, rate, rates = PROFIT_DEFAULT_RATES, now =
   return lines.join('\n');
 }
 
-export function profitQuery(text) { return String(text || '').replace(/```|`/g, '').replace(/[\r\n]+/g, '; ').trim(); }
-export const queryFooter = (text) => `\n\nSearch: \`${profitQuery(text)}\``;
+export function profitQuery(text) { return String(text || '').replace(/^```(?:text)?\s*\n([\s\S]*?)\n```$/i, '$1').replace(/[\r\n]+/g, '; ').trim(); }
+export const queryFooter = (text) => {
+  const query = profitQuery(text), runs = query.match(/`+/g) || [];
+  const delimiter = '`'.repeat(1 + Math.max(0, ...runs.map(run => run.length)));
+  const padding = runs.length ? ' ' : '';
+  return `\n\nSearch: ${delimiter}${padding}${query}${padding}${delimiter}`;
+};
 export function queryFromMessage(message, applicationId) {
   if (message?.author?.id !== applicationId || message.author.bot !== true) return '';
-  return String(message.content || '').match(/\n\nSearch: `([^`]{1,1100})`$/)?.[1] || '';
+  const match = String(message.content || '').match(/\n\nSearch: (`+)([^\r\n]*)$/);
+  if (!match || !match[2].endsWith(match[1])) return '';
+  let query = match[2].slice(0, -match[1].length);
+  if (match[1].length > 1) {
+    if (!query.startsWith(' ') || !query.endsWith(' ')) return '';
+    query = query.slice(1, -1);
+  }
+  return query.length > 0 && query.length <= 1100 ? query : '';
 }

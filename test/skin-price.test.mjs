@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aiItemSupportedByText, buildReply, catalogHintsForText, escapeHtml, isLikelySkinRequest, parseRequest, resolveItem, shouldReply } from '../supabase/functions/skin-price-webhook/skin-price.mjs';
-import { createHandler } from '../supabase/functions/skin-price-webhook/handler.mjs';
+import { aiItemSupportedByText, buildReply, catalogHintsForText, escapeHtml, isLikelySkinRequest, parseRequest, resolveItem } from '../supabase/functions/skin-price-webhook/skin-price.mjs';
 import { lookupDiscord } from '../discord.mjs';
 import { itemNames } from '../supabase/functions/skin-price-webhook/catalog.mjs';
 
@@ -800,126 +799,6 @@ test('misspelled Souvenir AWP LongDog does not become AWP Duality', async () => 
   assert.doesNotMatch(reply, /Duality/);
 });
 
-test('ignores unrelated group messages and other bots commands', () => {
-  assert.equal(shouldReply({ text: '/price@OtherBot AK redline ft' }, 'SkinBot'), false);
-  assert.equal(shouldReply({ text: '/price AK redline ft' }, 'SkinBot'), true);
-  assert.equal(shouldReply({ text: 'hello everyone' }, 'SkinBot'), false);
-  assert.equal(shouldReply({ text: '@SkinBot price for AK redline ft' }, 'SkinBot'), true);
+test('HTML responses escape special characters', () => {
   assert.equal(escapeHtml('<b>&'), '&lt;b&gt;&amp;');
 });
-
-test('webhook authenticates the Telegram header and replies in the same chat', async () => {
-  const sent = [];
-  const fakeFetch = async (url, options) => {
-    if (url.includes('api.telegram.org')) {
-      sent.push(JSON.parse(options.body));
-      return { ok: true, json: async () => ({ ok: true }) };
-    }
-    return mockFetch(url, options);
-  };
-  const handler = createHandler({ token: 'test-token', secret: 'test-secret', botUsername: 'SkinBot' }, fakeFetch);
-  const payload = JSON.stringify({ message: { chat: { id: -100123 }, message_id: 42, text: '/price AK redline ft rate 3.65' } });
-  const unauthorized = await handler(new Request('https://example.test/telegram', { method: 'POST', body: payload }));
-  assert.equal(unauthorized.status, 401);
-  assert.equal(sent.length, 0);
-  const response = await handler(new Request('https://example.test/telegram', {
-    method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'test-secret' }, body: payload,
-  }));
-  assert.equal(response.status, 200);
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].chat_id, -100123);
-  assert.equal(sent[0].reply_to_message_id, 42);
-  assert.match(sent[0].text, /¥160\.99/);
-});
-
-test('Telegram sends a clear catalog answer without spending a Gemini request', async () => {
-  let geminiCalls = 0;
-  const sent = [];
-  const fakeFetch = async (url, options) => {
-    if (url.includes('generativelanguage.googleapis.com')) {
-      geminiCalls++;
-      throw new Error('A clear catalog match should not call Gemini');
-    }
-    if (url.includes('api.telegram.org')) {
-      sent.push(JSON.parse(options.body));
-      return { ok: true, json: async () => ({ ok: true }) };
-    }
-    return mockFetch(url, options);
-  };
-  const handler = createHandler({ token: 'test-token', secret: 'test-secret', botUsername: 'SkinBot', geminiKey: 'test-key' }, fakeFetch);
-  const response = await handler(new Request('https://example.test/telegram', {
-    method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'test-secret' },
-    body: JSON.stringify({ message: { chat: { id: -100123 }, message_id: 7, text: '/price@SkinBot redline awp ft' } }),
-  }));
-  assert.equal(response.status, 200);
-  assert.equal(geminiCalls, 0);
-  assert.match(sent[0].text, /AWP \| Redline \(Field-Tested\)/);
-});
-
-test('Telegram sends an unresolved full request and catalog hints to Gemini', async () => {
-  let prompt = '';
-  const sent = [];
-  const fakeFetch = async (url, options) => {
-    if (url.includes('generativelanguage.googleapis.com')) {
-      prompt = JSON.parse(options.body).contents[0].parts[0].text;
-      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [
-        { text: '{"items":["AWP | Redline (Field-Tested)"]}' },
-      ] } }] }) };
-    }
-    if (url.includes('api.telegram.org')) {
-      sent.push(JSON.parse(options.body));
-      return { ok: true, json: async () => ({ ok: true }) };
-    }
-    return mockFetch(url, options);
-  };
-  const handler = createHandler({ token: 'test-token', secret: 'test-secret', botUsername: 'SkinBot', geminiKey: 'test-key' }, fakeFetch);
-  const response = await handler(new Request('https://example.test/telegram', {
-    method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'test-secret' },
-    body: JSON.stringify({ message: { chat: { id: -100123 }, message_id: 8,
-      text: '/price@SkinBot please find redline awp ft plz for me' } }),
-  }));
-  assert.equal(response.status, 200);
-  assert.match(prompt, /Full user message: \/price@SkinBot please find redline awp ft plz for me/);
-  assert.match(prompt, /AWP \| Redline/);
-  assert.match(sent[0].text, /AWP \| Redline \(Field-Tested\)/);
-  assert.match(sent[0].text, /¥617\.00 CNY/);
-  assert.equal(sent[0].reply_to_message_id, 8);
-});
-
-test('Telegram photo lookup sends its caption, catalog hints, and image to Gemini', async () => {
-  let prompt = '';
-  let inlineImage;
-  const sent = [];
-  const fakeFetch = async (url, options) => {
-    if (url.endsWith('/getFile')) return { ok: true, json: async () => ({ ok: true, result: { file_path: 'photos/test.jpg' } }) };
-    if (url.includes('/file/bottest-token/')) return { ok: true, arrayBuffer: async () => new Uint8Array([0xff, 0xd8, 0xff]).buffer };
-    if (url.includes('generativelanguage.googleapis.com')) {
-      const parts = JSON.parse(options.body).contents[0].parts;
-      prompt = parts[0].text;
-      inlineImage = parts[1].inline_data;
-      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [
-        { text: '{"items":["AWP | Redline (Field-Tested)"]}' },
-      ] } }] }) };
-    }
-    if (url.endsWith('/sendMessage')) {
-      sent.push(JSON.parse(options.body));
-      return { ok: true, json: async () => ({ ok: true }) };
-    }
-    return mockFetch(url, options);
-  };
-  const handler = createHandler({ token: 'test-token', secret: 'test-secret', botUsername: 'SkinBot', geminiKey: 'test-key' }, fakeFetch);
-  const response = await handler(new Request('https://example.test/telegram', {
-    method: 'POST', headers: { 'x-telegram-bot-api-secret-token': 'test-secret' },
-    body: JSON.stringify({ message: { chat: { id: -100123 }, message_id: 9,
-      caption: '/price@SkinBot redline awp ft', photo: [{ file_id: 'photo-id', file_size: 3 }] } }),
-  }));
-  assert.equal(response.status, 200);
-  assert.match(prompt, /Full user message: \/price@SkinBot redline awp ft/);
-  assert.match(prompt, /AWP \| Redline/);
-  assert.equal(inlineImage.mime_type, 'image/jpeg');
-  assert.ok(inlineImage.data);
-  assert.match(sent[0].text, /AWP \| Redline \(Field-Tested\)/);
-});
-
-
-

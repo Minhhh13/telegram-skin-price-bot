@@ -1,86 +1,73 @@
-# BUFF163 skin price bot for Telegram, Discord, and Messenger
+# Discord CS2 price and profit bot
 
-Standalone on-demand lookup for up to 10 CS2 items per request. It resolves names against a local snapshot of the [OpenSkin free item catalog](https://openskin.dev/) and requests BUFF163 CNY feed prices from OpenSkin only for the resolved names. This keeps routine name matching fast and prevents AI from substituting an unrelated item. OpenSkin says its BUFF163 source refreshes about every 30 minutes; replies show each quote's source timestamp and warn after five minutes, since a feed quote is not a live BUFF listing. No OpenSkin account, paid model or scrape session is required. A CNY→VND rate of `3.65` means **3,650 VND per CNY**. The bot uses no Trade Desk data or code.
+This Node service runs the BUFF price checker and the private/team Trade Desk profit checkers in Discord. It exposes `/discord` for signed interactions, `/health` for hosting checks, and one Discord Gateway connection for ordinary messages and photos. Telegram and Messenger are retired: the service no longer registers a Telegram webhook, serves `/telegram`, starts a Messenger worker, or builds a Messenger sidecar.
 
-Refresh the catalog after new CS2 items are released with `npm run sync:catalog`, then redeploy. The snapshot currently contains 38,043 item names. Text requests use the local catalog for fast name matching, including common shorthand, close spellings, unique finish words within a named weapon (`ak lotus fn`), reversed weapon/finish order, agent names, vanilla knives, stickers, charms, cases, and other collectibles. Sticker modifiers and event/year stay part of the identity. Clear matches go straight to the price feed without spending a Gemini request. When configured, Gemini receives the full original message plus nearby catalog names for unresolved text or photos. It never supplies prices, and a returned name must pass explicit constraints. Ambiguous names offer real catalogue choices instead of an assumed price.
+## Channels
 
-## Group use
+| Channel | Service behavior |
+| --- | --- |
+| `buff-botpricer` | BUFF CNY prices, VND conversions, photos and customer quote controls. |
+| Private profit channel | Personal Trade Desk offers and estimated profit for the requesting member. |
+| Team profit channel | The same profit checker, scoped to each requesting member's linked account. |
+| `cs-market-update` | Existing channel integration managed outside this service. |
+| `binance-p2p-usdt-rate` | Existing channel integration managed outside this service. |
+| `c5-youpin-code` | Existing channel integration managed outside this service. |
 
-Add the bot to a Telegram group. Members can send:
+Only the configured BUFF channel and explicit profit channel IDs are handled by this service. It ignores other channels and messages from bots. The other three channels retain their existing integrations.
 
-```text
-/price AK-47 | Redline (Field-Tested)
-/price AK-47 | Redline (Field-Tested); AWP | Asiimov (Field-Tested) rate 3.65
-/price AK-47 | Redline (Field-Tested)
-AWP | Asiimov (Field-Tested) rates 3.6, 3.65, 3.7
-```
+## BUFF checker
 
-Members can also mention or reply to the bot and ask for a base price in ordinary language or attach a JPEG/PNG screenshot under 5 MB. Telegram's default bot privacy mode remains on. When `GEMINI_API_KEY` is configured, only messages and images addressed to the bot go to Gemini 3.5 Flash-Lite's free tier for item-name recognition. Gemini never supplies prices. If a name lacks wear, the bot quotes all available base wears; if it could refer to several weapons, the bot lists matching names and requests the exact one. A price is never fabricated from a USD conversion or another marketplace. Quotes older than five minutes are marked as possibly missing newer listings. Explicit float requests receive an unavailable message because the free OpenSkin feed cannot filter BUFF listings by float.
-
-The default conversion shows `3.60`, `3.65`, `3.70`, `3.75`, `3.78`, and `3.80`, with two rates per row. A request may override this with 1–12 rates. Values like `3650` are accepted as equivalent to `3.65`. All conversion values are rounded to the nearest VND. Doppler requests can specify Phase 1–4, Ruby, Sapphire, Black Pearl, or Emerald; the response shows the selected style and uses OpenSkin's BUFF style price. Multiple style requests share repeated item fetches and run at most three fetches at a time. The BUFF link opens the item page, where the user must select the same style filter to verify the listing. Exact float range and paint seed filters are not supported by this free feed.
-
-## Discord
-
-The same Node service exposes `/discord` for a guild-scoped `/buff` command and connects to Discord's Gateway for plain text messages. It only answers in the configured guild and `#buff-botpricer` channel. Members can simply post `AK redline ft; karambit gamma dop phase 2`, or use `/buff items: AK redline ft`. Members can optionally attach a JPEG, PNG, WebP, HEIC, or HEIF image under 5 MB when Gemini is configured, including a BUFF screenshot with a visible Chinese item title. The app must be installed in the guild with the `bot` and `applications.commands` scopes, permission to view/send in the dedicated channel, and Message Content intent enabled. The service verifies each slash command's Ed25519 signature and registers it on startup. The Gateway listener ignores other channels and bot messages. Discord link embeds are suppressed in its replies.
-
-To send a price to a customer, click **Customer quote** below a priced reply and choose one item and a displayed CNY-to-VND rate. Click **Custom rate** to enter another rate, such as `3.72` or `3720` VND per CNY. Both produce a private quote with the item name, CNY ask, converted VND price, and BUFF link. On Discord for iPhone, click **Copy on phone** in that private reply, tap the prefilled text field, then use **Select All → Copy**. These quote controls use the price already in the bot's reply, so they make no extra price or AI request. To refresh the price, send a new lookup first.
-
-When a reply shows possible catalogue matches, choose one of up to five names from **Choose an item to price**. The bot fetches only the selected item's BUFF price and returns a private, one-item result with the same quote controls.
-
-The always-on Render Starter instance points Discord's Interactions Endpoint directly to `https://telegram-skin-price-bot.onrender.com/discord`; the Node handler verifies the Discord signature, immediately defers the command, then sends the price as a follow-up. The older Supabase `discord-bridge` source remains in this repository but is not in the live request path.
-
-## Messenger
-
-The existing Render Starter Node service also runs a Messenger listener using the clone account, scoped to the configured TradeDesk group. Send `!buff awp long dog ft` or tag `@Thang Manh Nguyen` or `@BUFF BOT PRICE CHECKER` followed by skin names. The listener handles live insert and upsert events and refreshes the inbox about every 30–45 seconds as a fallback. This unofficial client has no target-thread history API: if a live event is missed, a refresh may return only the newest group message. Discord's direct event delivery is more reliable and faster. The Messenger client runs in a child process that recycles every 18 minutes to contain native memory growth. In-flight replies finish before a normal refresh; successfully answered message IDs and refreshed session cookies survive the child recycle. A full Render restart reloads the cookie from its environment setting. Replies use a compact plain-text layout with a direct BUFF item URL; Messenger may generate its own large preview card. This unofficial integration can still break when Meta changes its protocol or the clone session expires.
-
-Set these two Render environment variables on the **same** web service:
+Post a request in `buff-botpricer`, or use `/buff items: AK redline ft`:
 
 ```text
-MESSENGER_THREAD_ID=<exact approved group thread ID>
-MESSENGER_COOKIES=<clone account's approved Facebook.com session cookies>
+AK-47 | Redline (Field-Tested)
+AK redline ft; AWP asiimov ft rate 3.65
+karambit gamma dop phase 2
 ```
 
-Keep the complete cookie string only in Render's secret environment setting. Do not send it in chat, commit it, or use the primary Facebook account. When both variables are present, the service logs a connection result at startup and retries a disconnected session. A browser login does not transfer to Render by itself. A fresh clone session may be needed if the current session expires. The implementation uses [meta-messenger.js](https://github.com/yumi-team/meta-messenger.js).
+Requests can contain up to ten items. The bot matches against its local [OpenSkin catalogue](https://openskin.dev/) and requests BUFF CNY feed prices only for resolved names. It supports common abbreviations, close spellings, unique finish words within a weapon, reversed weapon/finish order, agents, vanilla knives and collectibles. Explicit wear, StatTrak, Souvenir, sticker modifiers and event/year remain part of the identity. An ambiguous request offers real catalogue choices rather than a guessed price.
 
-Set `MESSENGER_ENABLED=false` to pause the Messenger worker while keeping its existing Render settings for later. Discord stays available on the same service.
+The default CNY-to-VND conversions are `3.60`, `3.65`, `3.70`, `3.75`, `3.78` and `3.80`. A rate of `3.65` means 3,650 VND per CNY; `rate 3650` is equivalent. A request can specify 1–12 rates. Missing wear returns available base wears. Doppler requests can specify Phase 1–4, Ruby, Sapphire, Black Pearl or Emerald. Float-range and paint-seed prices are unavailable from this feed.
 
-Required Render environment variables for Discord:
+When `GEMINI_API_KEY` is configured, members can attach a JPEG, PNG, WebP, HEIC or HEIF image under 5 MB, including a BUFF screenshot with a visible Chinese title. Clear text matches stay local. Gemini interprets unresolved text and images; it never supplies prices. The response shows the feed timestamp and marks quotes older than five minutes as potentially missing newer listings.
+
+Click **Customer quote** to choose an item and displayed conversion rate, or **Custom rate** to enter another rate. These controls use the price already in the reply and make no extra price or AI request. The private copy contains the exact item, CNY ask, VND price and BUFF link. **Copy on phone** opens the same text in a selectable field. Send a new lookup to obtain a fresh BUFF price.
+
+## Profit checkers
+
+Both configured profit channels use the same checker and shared weekly USD-to-VND rate. Members use `/setup` to enter their team Trade Desk Account ID privately, then post item names or supported photos. `/profit` remains available for a private lookup. Each lookup, refresh and item selection uses the requesting member's linked account; personal offers are never shared through the catalogue cache.
+
+Search uses the active Trade Desk catalogue, including names absent from the BUFF snapshot. An unresolved weapon, wear or Doppler style remains an explicit choice. The checker rejects missing or mismatched quote identities before displaying profit. **Custom buying rate** recalculates one selected item; **Customer quote** copies only the BUFF customer-facing values. See [profit checker setup and calculations](docs/PROFIT-CHECKER.md) for details.
+
+## Configuration
+
+Use Node 22. Configure the existing Discord application with the `bot` and `applications.commands` scopes, enable Message Content intent, and give it View Channel, Send Messages and Read Message History in the configured channels.
+
+Required environment variables:
 
 ```text
 DISCORD_PUBLIC_KEY=<application public key>
 DISCORD_APPLICATION_ID=<application ID>
 DISCORD_GUILD_ID=<server ID>
 DISCORD_CHANNEL_ID=<buff-botpricer channel ID>
-DISCORD_BOT_TOKEN=<bot token for guild command registration>
-GEMINI_API_KEY=<optional Google AI Studio free-tier key for text and photo understanding>
+DISCORD_BOT_TOKEN=<bot token>
 ```
 
-## Hosting
-
-The repository supports either a separate Render web service or a separate Supabase Edge Function. Only one host should own the Telegram webhook. Neither option needs a database, an OpenSkin key, or an AI subscription.
-
-### Render
-
-The live service uses one Render Starter instance for the HTTP webhook, Discord Gateway, and Messenger worker. It does not require another Render service or database. For a new deployment, use build command `npm ci` (or `npm install` if no lockfile), start command `npm start`, and health check `/health`. The root `postinstall` script applies a guarded 75 ms idle-poll pause to the pinned Messenger library to avoid wasting CPU. Put the three Telegram secrets below in the service environment, plus `TELEGRAM_SKIN_WEBHOOK_URL=https://<service>.onrender.com/telegram`. The service registers its Telegram webhook on startup with the same secret token.
-
-### Supabase Edge Function
-
-The source has no database dependency. Deploy `supabase/functions/skin-price-webhook/index.js` with its local `skin-price.mjs` dependency and `verify_jwt=false` because Telegram cannot provide a Supabase JWT. The function authenticates calls using Telegram's `secret_token` webhook header.
-
-Configure three secrets, separate from all other bots:
+Profit channel configuration:
 
 ```text
-TELEGRAM_SKIN_BOT_TOKEN=<new bot token from BotFather>
-TELEGRAM_SKIN_WEBHOOK_SECRET=<random 32+ character letters/numbers/underscores/hyphens>
-TELEGRAM_SKIN_BOT_USERNAME=<new bot username without @>
+DISCORD_PROFIT_CHANNEL_IDS=<private channel ID>,<team channel ID>
+DISCORD_PROFIT_OWNER_ID=<owner Discord user ID>
+TRADE_DESK_URL=https://tradedesk.click
+TRADE_DESK_DISCORD_API_KEY=<integration key>
 ```
 
-Set the webhook with a **POST** to Telegram's `setWebhook` Bot API method. Body:
+The legacy singular `DISCORD_PROFIT_CHANNEL_ID` is merged with the plural setting. `GEMINI_API_KEY` enables optional text/photo interpretation. Keep tokens and integration keys in the host's secret environment settings.
 
-```json
-{"url":"https://<project-ref>.supabase.co/functions/v1/skin-price-webhook","secret_token":"<same secret>","allowed_updates":["message"]}
-```
+## Hosting and development
 
-Keep the bot token out of source, chat messages, and screenshots. Run `npm test` locally. Check `getWebhookInfo` for delivery errors after connecting the bot.
+The existing Render web service can host the HTTP endpoint and Discord Gateway together. Build with `npm ci`, start with `npm start`, and use `/health` as the health check. Set the Discord Interactions Endpoint to `https://<existing-service-host>/discord`. The existing hostname may retain its historical Telegram name; the runtime and route are Discord-only. Commands are registered on startup and interactions require a valid Discord Ed25519 signature.
 
+No Messenger package, postinstall patch, Go build or child listener process is required. Retired Telegram/Messenger environment variables are ignored. The shared matching and image modules remain under `supabase/functions/skin-price-webhook/` because Discord imports them; their directory name does not introduce a separate runtime or database requirement.
 
+Run `npm test` for the shared matcher, Discord handlers, profit checks and runtime regression tests. Refresh the BUFF catalogue after new CS2 items are released with `npm run sync:catalog`, then redeploy. The profit checker obtains its own versioned catalogue from the Trade Desk integration and caches catalogue identities for at most 60 seconds.
