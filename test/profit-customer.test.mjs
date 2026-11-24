@@ -27,7 +27,7 @@ function signed(data) {
     'x-signature-ed25519': sign(null, Buffer.from(timestamp + body), privateKey).toString('hex') }) };
 }
 const submit = (item = '1', rate = '3.65') => ({ type: 5, message: original, data: { custom_id: 'tdprofit:customer-quote-submit', components: [
-  { type: 18, component: { type: 3, custom_id: 'item', values: [item] } },
+  { type: 18, component: { type: 3, custom_id: 'item', values: Array.isArray(item) ? item : [item] } },
   { type: 18, component: { type: 3, custom_id: 'selling_rate', values: [rate] } },
 ] } });
 const quoteText = (response) => response.data.content.match(/^Copy this quote:\n```text\n([\s\S]+)\n```$/)?.[1];
@@ -52,6 +52,10 @@ test('customer quote button and submit work privately in both channels without a
     const modal = JSON.parse((await handler(button.headers, button.body)).body);
     assert.equal(modal.type, 9);
     assert.equal(modal.data.components[0].component.options.length, 2);
+    assert.equal(modal.data.components[0].label, 'Items');
+    assert.equal(modal.data.components[0].component.min_values, 1);
+    assert.equal(modal.data.components[0].component.max_values, 2);
+    assert.equal(modal.data.components[0].component.placeholder, 'Choose one or more items');
     assert.equal(modal.data.components[1].component.custom_id, 'selling_rate');
     assert.equal(modal.data.components[1].component.type, 3);
     assert.deepEqual(modal.data.components[1].component.options.map(option => option.value), ['3.60', '3.65', '3.70', '3.75', '3.80']);
@@ -69,6 +73,83 @@ test('customer quote button and submit work privately in both channels without a
   }
 });
 
+test('both profit channels combine selected skins at one rate without extra requests or internal details', async () => {
+  const handler = createProfitDiscordHandler(config, async () => { assert.fail('Multi-item copy must not call another service'); });
+  for (const channel_id of [firstChannel, secondChannel]) {
+    const submission = submit(['1', '0'], '3.70');
+    submission.data.custom_id += `:${original.id}`;
+    const request = signed({ ...submission, channel_id });
+    const response = JSON.parse((await handler(request.headers, request.body)).body);
+    const expected = `${rows[0].name}\nBUFF: ¥98.00 CNY\n3.70 → ₫362,600\nhttps://buff.163.com/goods/34432\n\n` +
+      `${rows[1].name} · Ruby\nBUFF: ¥5,900.00 CNY\n3.70 → ₫21,830,000\nhttps://buff.163.com/goods/43091`;
+    assert.equal(quoteText(response), expected);
+    assert.equal(response.data.flags, 68);
+    assert.deepEqual(response.data.allowed_mentions, { parse: [] });
+    assert.doesNotMatch(expected, /profit|Trade Desk|USD|25,800|secret-account|FN assumed|🔴|🟢|Search:/i);
+    const message = { id: '123456789012345685', author: original.author, content: response.data.content };
+    const button = signed({ type: 3, channel_id, message, data: { custom_id: 'tdprofit:customer-copy' } });
+    const phone = JSON.parse((await handler(button.headers, button.body)).body);
+    assert.equal(phone.type, 9);
+    assert.equal(phone.data.components[0].component.value, expected);
+    const phoneRequest = signed({ type: 5, channel_id, message, data: { custom_id: phone.data.custom_id, components: [
+      { type: 18, component: { custom_id: phone.data.components[0].component.custom_id, value: 'Changed by the user' } },
+    ] } });
+    assert.equal(quoteText(JSON.parse((await handler(phoneRequest.headers, phoneRequest.body)).body)), expected);
+  }
+});
+
+test('multi-item selections reject the entire request if any item or shared rate is invalid', () => {
+  const invalid = [[], ['0', '0'], ['0', '99'], ['0', '01'], ['0', '-1'], ['0', ''], ['0', 1], ['0', null]];
+  for (const selection of invalid) {
+    const response = profitCustomerInteraction(submit(selection), app);
+    assert.equal(quoteText(response), undefined, JSON.stringify(selection));
+    assert.match(response.data.content, /Choose one or more items/);
+    assert.equal(response.data.flags, 68);
+  }
+  for (const badValue of [undefined, null, '0', { 0: '0' }]) {
+    const request = submit();
+    request.data.components[0].component.values = badValue;
+    assert.equal(quoteText(profitCustomerInteraction(request, app)), undefined);
+  }
+  for (const badRates of [[], ['3.65', '3.70'], ['3.65', '3.65'], '3.65']) {
+    const request = submit(['0', '1']);
+    request.data.components[1].component.values = badRates;
+    assert.equal(quoteText(profitCustomerInteraction(request, app)), undefined);
+  }
+  const legacy = submit('0');
+  for (const row of legacy.data.components) {
+    row.component.value = row.component.values[0];
+    delete row.component.values;
+  }
+  assert.equal(quoteText(profitCustomerInteraction(legacy, app)), quoteText(profitCustomerInteraction(submit('0'), app)));
+});
+
+test('combined quotes and phone copying enforce the full text limit without truncation', () => {
+  const output = names => names.map(name => `${name}\nBUFF: ¥98.00 CNY\n3.65 → ₫357,700\nhttps://buff.163.com/goods/34432`).join('\n\n');
+  for (const size of [1800, 1801]) {
+    const names = ['A'.repeat(550), 'B'.repeat(550), 'C'];
+    names[2] = 'C'.repeat(size - output(names).length + 1);
+    const source = { ...original, content: '**Your Trade Desk profit check**\n\n' + names.map(name =>
+      `**${name}**\nBUFF: **¥98.00 CNY** · [BUFF listing](<https://buff.163.com/goods/34432>)`).join('\n\n') + queryFooter('three items') };
+    const response = profitCustomerInteraction({ ...submit(['0', '1', '2']), message: source }, app);
+    if (size === 1801) {
+      assert.equal(quoteText(response), undefined);
+      assert.match(response.data.content, /Select fewer items/);
+    } else {
+      assert.equal(quoteText(response), output(names));
+      assert.equal(quoteText(response).length, size);
+      assert.ok(response.data.content.length < 2000);
+      const phone = profitCustomerInteraction({ type: 3, message: { ...original, content: response.data.content }, data: { custom_id: 'tdprofit:customer-copy' } }, app);
+      assert.equal(phone.data.components[0].component.value, output(names));
+    }
+  }
+  const text = quoteText(profitCustomerInteraction(submit(['0', '1']), app));
+  const tampered = text.replace('https://buff.163.com/goods/43091', 'https://other.test/goods/43091');
+  const phone = profitCustomerInteraction({ type: 3, message: { ...original, content: `Copy this quote:\n\`\`\`text\n${tampered}\n\`\`\`` }, data: { custom_id: 'tdprofit:customer-copy' } }, app);
+  assert.equal(phone.type, 4);
+  assert.match(phone.data.content, /unavailable/);
+});
+
 test('BUFF-style quote labels preserve cents and a displayed three-decimal custom buying rate', () => {
   const response = profitCustomerInteraction(submit('0', '3650'), app);
   assert.equal(quoteText(response), `${rows[0].name}\nBUFF: ¥98.00 CNY\n3.65 → ₫357,700\nhttps://buff.163.com/goods/34432`);
@@ -78,6 +159,8 @@ test('BUFF-style quote labels preserve cents and a displayed three-decimal custo
   assert.equal(quoteText(profitCustomerInteraction(customRequest, app)), `${rows[0].name}\nBUFF: ¥98.75 CNY\n3.615 → ₫356,981\nhttps://buff.163.com/goods/34432`);
   const customModal = profitCustomerInteraction({ type: 3, message: custom, data: { custom_id: profitCustomerButtonId } }, app);
   assert.deepEqual(customModal.data.components[1].component.options, [{ label: '3.615', value: '3.615', default: true }]);
+  assert.equal(customModal.data.components[0].component.max_values, 1);
+  assert.equal(customModal.data.components[0].component.options[0].default, true);
   const changedInternals = { ...original, content: content.replace('25,800', '99,999').replace('secret-account-value', 'different-account') };
   assert.equal(quoteText(profitCustomerInteraction({ ...submit('0', '3650'), message: changedInternals }, app)), quoteText(response));
 });

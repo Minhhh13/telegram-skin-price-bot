@@ -4,6 +4,7 @@ export const profitCustomerButtonId = 'tdprofit:customer-quote';
 const submitId = 'tdprofit:customer-quote-submit';
 const phoneId = 'tdprofit:customer-copy';
 const phoneSubmitId = 'tdprofit:customer-copy-submit';
+const copyLimit = 1800;
 const listing = /^https:\/\/buff\.163\.com\/goods\/\d+$/;
 const messageScope = message => message?.id == null ? '' : /^\d{17,20}$/.test(message.id) ? `:${message.id}` : null;
 const isSubmit = (id, base) => typeof id === 'string' && (id === base || id.startsWith(`${base}:`));
@@ -39,10 +40,10 @@ export function profitCustomerButton(content) {
   return profitCustomerQuotes(content).length ? { type: 2, style: 2, custom_id: profitCustomerButtonId, label: 'Customer quote' } : null;
 }
 
-function value(components, id) {
+function values(components, id) {
   for (const row of components || []) {
     const component = row.component?.custom_id === id ? row.component : row.components?.find((part) => part.custom_id === id);
-    if (component) return component.values?.[0] ?? component.value;
+    if (component) return component.values === undefined && typeof component.value === 'string' ? [component.value] : component.values;
   }
 }
 
@@ -64,7 +65,8 @@ function customerModal(quotes, scope) {
   const rates = quoteRates(quotes);
   const rate = rates.length === 1 ? rates[0] : rates.includes('3.65') ? '3.65' : rates[0];
   return { type: 9, data: { custom_id: `${submitId}${scope}`, title: 'Customer quote', components: [
-    { type: 18, label: 'Item', component: { type: 3, custom_id: 'item', required: true, placeholder: 'Choose one item',
+    { type: 18, label: 'Items', component: { type: 3, custom_id: 'item', required: true, min_values: 1, max_values: quotes.length,
+      placeholder: 'Choose one or more items',
       options: quotes.map((quote, index) => ({ label: quote.name.slice(0, 100), value: String(index), default: quotes.length === 1 })) } },
     { type: 18, label: 'CNY to VND rate', component: { type: 3, custom_id: 'selling_rate', required: true,
       placeholder: 'Choose one rate', options: rates.map(value => ({ label: value, value, default: value === rate })) } },
@@ -72,6 +74,8 @@ function customerModal(quotes, scope) {
 }
 
 function copyReady(text) {
+  if (text.length > copyLimit) return { type: 4, data: {
+    content: 'That quote is too long to copy together. Select fewer items and try again.', flags: 68, allowed_mentions: { parse: [] } } };
   return { type: 4, data: { content: `Copy this quote:\n\`\`\`text\n${text}\n\`\`\``, flags: 68, allowed_mentions: { parse: [] },
     components: [{ type: 1, components: [{ type: 2, style: 2, custom_id: phoneId, label: 'Copy on phone' }] }] } };
 }
@@ -79,11 +83,15 @@ function copyReady(text) {
 function copiedText(message, applicationId) {
   if (!ownMessage(message, applicationId)) return '';
   const text = String(message.content || '').match(/^Copy this quote:\n```text\n([\s\S]{1,1800})\n```$/)?.[1] || '';
-  const lines = text.split('\n');
-  const legacy = lines.length === 3 && /^₫[\d,]+$/.test(lines[1]) && listing.test(lines[2]);
-  const standard = lines.length === 4 && /^BUFF: ¥[\d,]+\.\d{2} CNY$/.test(lines[1]) &&
-    /^\d+\.\d{2,3} → ₫[\d,]+$/.test(lines[2]) && listing.test(lines[3]);
-  return lines[0] && (legacy || standard) ? text : '';
+  const blocks = text.split('\n\n');
+  const valid = blocks.every(block => {
+    const lines = block.split('\n');
+    const legacy = blocks.length === 1 && lines.length === 3 && /^₫[\d,]+$/.test(lines[1]) && listing.test(lines[2]);
+    const standard = lines.length === 4 && /^BUFF: ¥[\d,]+\.\d{2} CNY$/.test(lines[1]) &&
+      /^\d+\.\d{2,3} → ₫[\d,]+$/.test(lines[2]) && listing.test(lines[3]);
+    return lines[0] && (legacy || standard);
+  });
+  return valid ? text : '';
 }
 
 export function profitCustomerInteraction(interaction, applicationId) {
@@ -96,20 +104,29 @@ export function profitCustomerInteraction(interaction, applicationId) {
   }
   if (interaction.type === 5 && isSubmit(id, submitId)) {
     if (!matchesSource(id, submitId, interaction.message) || !queryFromMessage(interaction.message, applicationId)) return error();
-    const quotes = profitCustomerQuotes(interaction.message.content), selected = value(interaction.data.components, 'item');
-    const quote = /^\d{1,2}$/.test(String(selected ?? '')) ? quotes[Number(selected)] : null;
-    const rate = sellingRate(value(interaction.data.components, 'selling_rate'));
-    if (!quote || rate === null || !quoteRates(quotes).includes(rateLabel(rate))) return { type: 4, data: {
-      content: 'Choose an item and one of the listed rates. Use Custom buying rate to enter a different rate.', flags: 68, allowed_mentions: { parse: [] } } };
-    const amount = convertCnyCentsToVnd(quote.cnyCents, rate);
-    const cny = `${(quote.cnyCents / 100n).toLocaleString('en-US')}.${String(quote.cnyCents % 100n).padStart(2, '0')}`;
-    return amount === null ? error() : copyReady(`${quote.name}\nBUFF: ¥${cny} CNY\n${rateLabel(rate)} → ₫${amount.toLocaleString('en-US')}\n${quote.url}`);
+    const quotes = profitCustomerQuotes(interaction.message.content), selected = values(interaction.data.components, 'item');
+    const rates = values(interaction.data.components, 'selling_rate');
+    const rate = Array.isArray(rates) && rates.length === 1 ? sellingRate(rates[0]) : null;
+    if (!Array.isArray(selected) || !selected.length || new Set(selected).size !== selected.length ||
+        !selected.every(index => typeof index === 'string' && /^(?:0|[1-9]\d?)$/.test(index) && quotes[Number(index)]) ||
+        rate === null || !quoteRates(quotes).includes(rateLabel(rate))) return { type: 4, data: {
+      content: 'Choose one or more items and one of the listed rates. Use Custom buying rate to enter a different rate.', flags: 68, allowed_mentions: { parse: [] } } };
+    const blocks = [];
+    // Keep the source result order, regardless of which item was selected first.
+    for (const [index, quote] of quotes.entries()) {
+      if (!selected.includes(String(index))) continue;
+      const amount = convertCnyCentsToVnd(quote.cnyCents, rate);
+      if (amount === null) return error();
+      const cny = `${(quote.cnyCents / 100n).toLocaleString('en-US')}.${String(quote.cnyCents % 100n).padStart(2, '0')}`;
+      blocks.push(`${quote.name}\nBUFF: ¥${cny} CNY\n${rateLabel(rate)} → ₫${amount.toLocaleString('en-US')}\n${quote.url}`);
+    }
+    return copyReady(blocks.join('\n\n'));
   }
   if (interaction.type === 3 && id === phoneId) {
     const scope = messageScope(interaction.message);
     const text = copiedText(interaction.message, applicationId);
     return text && scope !== null ? { type: 9, data: { custom_id: `${phoneSubmitId}${scope}`, title: 'Copy quote on phone', components: [
-      { type: 18, label: 'Tap, Select All, then Copy', component: { type: 4, custom_id: `quote_text${scope}`, style: 2, required: false, max_length: 1800, value: text } },
+      { type: 18, label: 'Tap, Select All, then Copy', component: { type: 4, custom_id: `quote_text${scope}`, style: 2, required: false, max_length: copyLimit, value: text } },
     ] } } : error();
   }
   if (interaction.type === 5 && isSubmit(id, phoneSubmitId)) {
